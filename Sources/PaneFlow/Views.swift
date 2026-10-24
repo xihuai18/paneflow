@@ -95,7 +95,8 @@ struct LayoutCanvas: View {
             .gesture(DragGesture(minimumDistance:1,coordinateSpace:.named("layout-editor")).onChanged { value in
                 let coordinate = vertical ? value.location.x : value.location.y
                 let extent = vertical ? bounds.width : bounds.height
-                moveLine(seam.id,LayoutPreset.snappedPercent(coordinate/extent*100))
+                let percent = Double(coordinate/extent)*100
+                moveLine(seam.id,LayoutPreset.snappedPercent(percent))
             })
             .onTapGesture { selectLine?(seam.id) }
             .accessibilityLabel(vertical ? "竖向分隔线" : "横向分隔线")
