@@ -57,45 +57,50 @@ struct LayoutCanvas: View {
             ZStack(alignment: .topLeading) {
                 ForEach(Array(root.panes.enumerated()), id: \.element) { index, slot in
                     if let frame = geometry?.panes[slot] {
-                        let empty = emptyPanes.contains(slot)
-                        let number = (root.panes.filter { !emptyPanes.contains($0) }.firstIndex(of:slot) ?? index)+1
-                        let label = empty ? "留白" : (names[slot] ?? "区域 \(number)")
-                        Button { choose(slot) } label: {
-                            VStack(spacing: 5) {
-                                Text(label).font(.system(size: 11, weight: .medium)).lineLimit(1)
-                                if let detail = details[slot], !detail.isEmpty {
-                                    Text(detail).font(.system(size:10)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
-                                }
-                            }.frame(width: frame.width, height: frame.height)
-                                .foregroundStyle(Color.primary)
-                        }.buttonStyle(LayoutRegionStyle(selected:selected == slot,empty:empty)).position(x: frame.midX, y: frame.midY)
-                            .disabled(empty && !editing)
-                            .help(editing ? "选择区域后添加横线、竖线或设为留白。" : (empty ? "留白区域不会放入窗口。" : (details[slot] ?? "点击放入当前窗口；已有窗口时交换位置。")))
-                            .accessibilityLabel("\(label)，\(editing ? "选择区域" : empty ? "不放窗口" : "点击放置")")
+                        pane(slot,index:index,frame:frame)
                     }
                 }
                 if let moveLine {
                     ForEach(geometry?.seams ?? [], id: \.id) { seam in
-                        let vertical = seam.axis == .horizontal
-                        RoundedRectangle(cornerRadius: 2).fill(selectedLine == seam.id ? Color.accentColor : Color.secondary.opacity(0.55))
-                            .frame(width: vertical ? 4 : 34, height: vertical ? 34 : 4)
-                            .padding(vertical ? .horizontal : .vertical, 5)
-                            .contentShape(Rectangle()).position(x: seam.line.midX, y: seam.line.midY)
-                            .onHover { inside in (inside ? (vertical ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown) : NSCursor.arrow).set() }
-                            .help("拖动分隔线，每次调整 1%；点击可输入位置。")
-                            .gesture(DragGesture(minimumDistance:1,coordinateSpace: .named("layout-editor")).onChanged { value in
-                                let coordinate = vertical ? value.location.x : value.location.y
-                                let extent = vertical ? bounds.width : bounds.height
-                                moveLine(seam.id,LayoutPreset.snappedPercent(coordinate/extent*100))
-                            })
-                            .onTapGesture { selectLine?(seam.id) }
-                            .accessibilityLabel(vertical ? "竖向分隔线" : "横向分隔线")
-                            .accessibilityAddTraits(.isButton)
-                            .accessibilityAction { selectLine?(seam.id) }
+                        divider(seam,bounds:bounds,moveLine:moveLine)
                     }
                 }
             }.coordinateSpace(name: "layout-editor")
         }
+    }
+    private func pane(_ slot: String, index: Int, frame: CGRect) -> some View {
+        let empty = emptyPanes.contains(slot)
+        let number = (root.panes.filter { !emptyPanes.contains($0) }.firstIndex(of:slot) ?? index)+1
+        let label = empty ? "留白" : (names[slot] ?? "区域 \(number)")
+        let action = editing ? "选择区域" : (empty ? "不放窗口" : "点击放置")
+        let hint = editing ? "选择区域后添加横线、竖线或设为留白。" : (empty ? "留白区域不会放入窗口。" : (details[slot] ?? "点击放入当前窗口；已有窗口时交换位置。"))
+        return Button { choose(slot) } label: {
+            VStack(spacing:5) {
+                Text(label).font(.system(size:11,weight:.medium)).lineLimit(1)
+                if let detail = details[slot], !detail.isEmpty {
+                    Text(detail).font(.system(size:10)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
+                }
+            }.frame(width:frame.width,height:frame.height).foregroundStyle(Color.primary)
+        }.buttonStyle(LayoutRegionStyle(selected:selected == slot,empty:empty)).position(x:frame.midX,y:frame.midY)
+            .disabled(empty && !editing).help(hint).accessibilityLabel("\(label)，\(action)")
+    }
+    private func divider(_ seam: LayoutSeam, bounds: CGRect, moveLine: @escaping (String,Double) -> Void) -> some View {
+        let vertical = seam.axis == .horizontal
+        return RoundedRectangle(cornerRadius:2).fill(selectedLine == seam.id ? Color.accentColor : Color.secondary.opacity(0.55))
+            .frame(width:vertical ? 4 : 34,height:vertical ? 34 : 4)
+            .padding(vertical ? .horizontal : .vertical,5)
+            .contentShape(Rectangle()).position(x:seam.line.midX,y:seam.line.midY)
+            .onHover { inside in (inside ? (vertical ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown) : NSCursor.arrow).set() }
+            .help("拖动分隔线，每次调整 1%；点击可输入位置。")
+            .gesture(DragGesture(minimumDistance:1,coordinateSpace:.named("layout-editor")).onChanged { value in
+                let coordinate = vertical ? value.location.x : value.location.y
+                let extent = vertical ? bounds.width : bounds.height
+                moveLine(seam.id,LayoutPreset.snappedPercent(coordinate/extent*100))
+            })
+            .onTapGesture { selectLine?(seam.id) }
+            .accessibilityLabel(vertical ? "竖向分隔线" : "横向分隔线")
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction { selectLine?(seam.id) }
     }
 }
 
