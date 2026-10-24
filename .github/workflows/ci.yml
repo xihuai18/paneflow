@@ -1,0 +1,27 @@
+name: macOS build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Swift version
+        run: xcrun swift --version
+      - name: Build app bundle
+        run: /bin/zsh scripts/build-app.sh release
+      - name: Core checks
+        run: swift run --disable-sandbox PaneFlowChecks
+      - name: Package local DMG
+        run: /bin/zsh scripts/package-dmg.sh
+      - name: Package source
+        run: /bin/zsh scripts/package-source.sh

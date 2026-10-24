@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="490" viewBox="0 0 1200 490" role="img" aria-labelledby="title description">
+  <title id="title">PaneFlow: snap, resize together, and place into a zone</title>
+  <desc id="description">Three illustrated desktops. First, a dragged window snaps to its neighbor's edge. Second, one tall window on the left and two stacked windows on the right share a blue vertical boundary; dragging it resizes all three while keeping the layout filled. Third, holding Option while dragging places a window into a highlighted layout zone. All window labels are fictional.</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 8 8" refX="6" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M1 1 6 4 1 7" fill="none" stroke="#6b7078" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></marker>
+    <marker id="active-arrow" viewBox="0 0 8 8" refX="6" refY="4" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M1 1 6 4 1 7" fill="none" stroke="#007aff" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></marker>
+    <g id="dots" fill="#b8bdc4"><circle cx="0" cy="0" r="3"/><circle cx="11" cy="0" r="3"/><circle cx="22" cy="0" r="3"/></g>
+    <g id="cursor"><path d="M0 0 0 25 6 19 11 30 16 28 11 17 20 17Z" fill="#30343b" stroke="#fff" stroke-width="2" stroke-linejoin="round"/></g>
+  </defs>
+  <rect width="1200" height="490" rx="24" fill="#f5f6f8"/>
+  <g font-family="-apple-system, BlinkMacSystemFont, Helvetica, Arial, sans-serif" fill="#24282f">
+    <text x="40" y="53" font-size="25" font-weight="650">PaneFlow</text>
+    <text x="40" y="82" font-size="16" fill="#666d78">Your windows, arranged together.</text>
+    <path d="M40 107H1160" stroke="#dce0e5"/>
+    <text x="40" y="145" font-size="19" font-weight="600">Snap to an edge</text>
+    <text x="430" y="145" font-size="19" font-weight="600">Resize together</text>
+    <text x="820" y="145" font-size="19" font-weight="600">Place into a zone</text>
+    <!-- Each desktop has its own geometry; these are schematic windows, not screenshots. -->
+    <g transform="translate(40 168)">
+      <rect width="340" height="235" rx="12" fill="#e8ebef" stroke="#d3d8de"/>
+      <rect x="20" y="22" width="139" height="191" rx="8" fill="#fff" stroke="#c0c6ce"/>
+      <path d="M20 51H159" stroke="#e3e6eb"/><use href="#dots" x="33" y="36"/>
+      <text x="89" y="129" font-size="15" text-anchor="middle" fill="#727983">Notes</text>
+      <rect x="206" y="73" width="114" height="140" rx="8" fill="none" stroke="#b0b7c1" stroke-dasharray="5 5"/>
+      <rect x="159" y="73" width="114" height="140" rx="8" fill="#fff" stroke="#9ba4b0"/>
+      <path d="M159 102H273" stroke="#e3e6eb"/><use href="#dots" x="172" y="88"/>
+      <text x="216" y="157" font-size="15" text-anchor="middle" fill="#727983">Browser</text>
+      <path d="M259 51H183" fill="none" stroke="#6b7078" stroke-width="2" marker-end="url(#arrow)"/>
+      <use href="#cursor" x="219" y="85"/>
+    </g>
+    <g transform="translate(430 168)">
+      <rect width="340" height="235" rx="12" fill="#e8ebef" stroke="#d3d8de"/>
+      <rect x="12" y="12" width="183" height="211" rx="8" fill="#fff" stroke="#c0c6ce"/>
+      <path d="M12 42H195" stroke="#e3e6eb"/><use href="#dots" x="25" y="27"/>
+      <text x="103" y="130" font-size="15" text-anchor="middle" fill="#727983">Editor</text>
+      <rect x="195" y="12" width="133" height="105" rx="8" fill="#fff" stroke="#c0c6ce"/>
+      <path d="M195 42H328" stroke="#e3e6eb"/><use href="#dots" x="208" y="27"/>
+      <text x="261" y="83" font-size="15" text-anchor="middle" fill="#727983">Preview</text>
+      <rect x="195" y="117" width="133" height="106" rx="8" fill="#fff" stroke="#c0c6ce"/>
+      <path d="M195 147H328" stroke="#e3e6eb"/><use href="#dots" x="208" y="132"/>
+      <text x="261" y="187" font-size="15" text-anchor="middle" fill="#727983">Console</text>
+      <path d="M195 16V219" stroke="#007aff" stroke-width="3"/>
+      <rect x="190" y="92" width="10" height="48" rx="5" fill="#007aff"/>
+      <path d="M156 117H232" fill="none" stroke="#007aff" stroke-width="2" marker-start="url(#active-arrow)" marker-end="url(#active-arrow)"/>
+      <use href="#cursor" x="197" y="118"/>
+    </g>
+    <g transform="translate(820 168)">
+      <rect width="340" height="235" rx="12" fill="#e8ebef" stroke="#d3d8de"/>
+      <rect x="12" y="12" width="154" height="211" rx="8" fill="#f6f7f9" stroke="#c7cdd5"/>
+      <rect x="174" y="12" width="154" height="101" rx="8" fill="#d2d8e1" stroke="#8b96a6" stroke-width="2"/>
+      <rect x="174" y="121" width="154" height="102" rx="8" fill="#f6f7f9" stroke="#c7cdd5"/>
+      <text x="251" y="70" font-size="15" text-anchor="middle" fill="#525c6b">Drop here</text>
+      <rect x="36" y="93" width="127" height="108" rx="8" fill="#fff" stroke="#9ba4b0"/>
+      <path d="M36 123H163" stroke="#e3e6eb"/><use href="#dots" x="49" y="108"/>
+      <text x="99" y="166" font-size="15" text-anchor="middle" fill="#727983">Notes</text>
+      <path d="M111 82Q155 39 198 54" fill="none" stroke="#6b7078" stroke-width="2" marker-end="url(#arrow)"/>
+      <use href="#cursor" x="128" y="108"/>
+      <rect x="241" y="171" width="68" height="29" rx="6" fill="#fff" stroke="#c0c6ce"/>
+      <text x="275" y="191" font-size="13" text-anchor="middle" fill="#535d6b">Option</text>
+    </g>
+    <g font-size="15" fill="#666d78">
+      <text x="40" y="435">Drag near another window to align.</text>
+      <text x="430" y="435">One shared edge. Three windows follow.</text>
+      <text x="820" y="435">Hold Option, drag, then release.</text>
+    </g>
+    <text x="40" y="468" font-size="12" fill="#7c838e">Illustration of PaneFlow interactions · Not a screenshot</text>
+  </g>
+</svg>

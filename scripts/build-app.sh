@@ -1,0 +1,33 @@
+#!/bin/zsh
+set -euo pipefail
+project_root="${0:A:h:h}"
+cd "$project_root"
+configuration="${1:-release}"
+[[ "$configuration" == debug || "$configuration" == release ]] && (( $# <= 2 )) || { print -u2 'Usage: scripts/build-app.sh [debug|release] [output-directory]'; exit 2; }
+output_dir="${2:-$project_root/build}"
+output_dir="${output_dir:A}"
+export CLANG_MODULE_CACHE_PATH="$project_root/.build/module-cache"
+/usr/bin/xcrun swift build --disable-sandbox --cache-path .build/cache --config-path .build/config --security-path .build/security -c "$configuration"
+binary_dir="$(/usr/bin/xcrun swift build --disable-sandbox --cache-path .build/cache --config-path .build/config --security-path .build/security -c "$configuration" --show-bin-path)"
+mkdir -p "$output_dir/backups"
+stage="$(mktemp -d "$output_dir/backups/bundle.XXXXXX")"
+bundle="$stage/PaneFlow.app"
+practice="$bundle/Contents/Resources/PaneFlow Practice.app"
+mkdir -p "$bundle/Contents/MacOS" "$practice/Contents/MacOS"
+cp Resources/Info.plist "$bundle/Contents/Info.plist"
+cp Resources/Practice-Info.plist "$practice/Contents/Info.plist"
+cp "$binary_dir/PaneFlow" "$bundle/Contents/MacOS/PaneFlow"
+cp "$binary_dir/PaneFlowPractice" "$practice/Contents/MacOS/PaneFlowPractice"
+cp LICENSE LICENSE-STATUS.md NOTICE-PaneGrid "$bundle/Contents/Resources/"
+"$binary_dir/PaneFlow" --export-icons "$stage/PaneFlow.iconset"
+/usr/bin/iconutil --convert icns --output "$bundle/Contents/Resources/PaneFlow.icns" "$stage/PaneFlow.iconset"
+/usr/bin/codesign --force --sign - "$practice"
+/usr/bin/codesign --force --sign - "$bundle"
+/usr/bin/codesign --verify --deep --strict "$bundle"
+/usr/bin/plutil -lint "$bundle/Contents/Info.plist" "$practice/Contents/Info.plist"
+if [[ -e "$output_dir/PaneFlow.app" ]]; then
+  mv "$output_dir/PaneFlow.app" "$stage/PaneFlow.backup"
+  mv "$stage/PaneFlow.backup/Contents" "$stage/PaneFlow.backup/bundle-contents"
+fi
+mv "$bundle" "$output_dir/PaneFlow.app"
+print "Built: $output_dir/PaneFlow.app"
