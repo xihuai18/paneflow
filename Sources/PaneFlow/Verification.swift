@@ -12,10 +12,12 @@ private struct HandlePreview: NSViewRepresentable {
 }
 
 @MainActor enum Verification {
-    static var requested: Bool { CommandLine.arguments.contains("--verify-interface") || CommandLine.arguments.contains("--verify-native") }
+    static var previewLayouts: Bool { CommandLine.arguments.contains("--preview-layouts") }
+    static var requested: Bool { CommandLine.arguments.contains("--verify-interface") || CommandLine.arguments.contains("--verify-native") || CommandLine.arguments.contains("--verify-layouts") }
     static func run(delegate: AppDelegate) async {
         let native = CommandLine.arguments.contains("--verify-native")
-        let flag = native ? "--verify-native" : "--verify-interface"
+        let layouts = CommandLine.arguments.contains("--verify-layouts")
+        let flag = layouts ? "--verify-layouts" : native ? "--verify-native" : "--verify-interface"
         guard let index = CommandLine.arguments.firstIndex(of: flag), CommandLine.arguments.indices.contains(index+1) else { fputs("Missing verification output path\n",stderr); exit(2) }
         let output = URL(fileURLWithPath: CommandLine.arguments[index+1])
         var results: [[String: Any]] = []
@@ -23,14 +25,15 @@ private struct HandlePreview: NSViewRepresentable {
         var status = "passed"
         var detail = ""
         do {
-            if native {
+            if layouts { try layoutChecks(directory:output.deletingLastPathComponent(),results:&results) }
+            else if native {
                 if !WindowAccess.trusted { status = "blocked"; exitCode = 77; detail = "PaneFlow needs Accessibility permission before external practice-window verification." }
                 else { try await nativeChecks(delegate: delegate, results: &results) }
             } else { try await interfaceChecks(delegate: delegate, directory: output.deletingLastPathComponent(), results: &results) }
         } catch { status = "failed"; exitCode = 1; detail = error.localizedDescription }
         do {
             try FileManager.default.createDirectory(at: output.deletingLastPathComponent(), withIntermediateDirectories: true)
-            let data = try JSONSerialization.data(withJSONObject: ["kind": native ? "native-practice" : "interface", "status":status, "detail":detail, "checks":results],options:[.prettyPrinted,.sortedKeys])
+            let data = try JSONSerialization.data(withJSONObject: ["kind": layouts ? "layout-management" : native ? "native-practice" : "interface", "status":status, "detail":detail, "checks":results],options:[.prettyPrinted,.sortedKeys])
             try data.write(to: output,options:.atomic)
         } catch { fputs("Could not write verification report\n",stderr); exit(1) }
         delegate.model.access.shutdown()
@@ -41,6 +44,59 @@ private struct HandlePreview: NSViewRepresentable {
         var result: [String:Any] = ["name":name,"passed":value]
         if !observed.isEmpty { result["observed"] = observed }
         results.append(result); if !value { throw NSError(domain:"PaneFlowVerification",code:1,userInfo:[NSLocalizedDescriptionKey:name]) }
+    }
+    private static func layoutChecks(directory: URL, results: inout [[String:Any]]) throws {
+        let fixture = directory.appendingPathComponent("layout-fixture-"+UUID().uuidString,isDirectory:true)
+        try FileManager.default.createDirectory(at:fixture,withIntermediateDirectories:true)
+        let path = fixture.appendingPathComponent("preferences.json")
+        let model = AppModel(storageURL:path)
+        let saved = LayoutPreset(id:"saved-layout",name:"阅读",root:LayoutPreset.builtins[3].root)
+        try require(model.saveLayout(saved),"save initial custom layout",&results)
+        let state = LayoutManagerState(model:model)
+        try require(state.current == saved && !state.isDirty,"manager selects the saved current layout",&results)
+        state.drafts[saved.id]?.name = "编辑与阅读"
+        state.drafts[saved.id]?.root = saved.root.replacingRatio("main",with:0.45)
+        state.selectedID = LayoutPreset.builtins[0].id
+        try require(state.dirtyIDs == [saved.id],"switching selection preserves unsaved edits",&results)
+        state.selectedID = saved.id
+        try require(state.save() && model.preferences.customLayouts.count == 1 && model.layout.id == saved.id,
+                    "saving edits retains identity without creating a duplicate",&results)
+        try require(AppModel(storageURL:path).layout == state.current,"edited name and geometry survive disk reload",&results)
+        let edited = state.current
+        state.duplicate(); let copyID = state.selectedID
+        try require(copyID != saved.id && state.current.root == edited.root && state.isDirty,"save-as creates a separate editable draft",&results)
+        try require(state.save() && model.preferences.customLayouts.count == 2 && model.preferences.customLayouts.first{$0.id == saved.id} == edited,
+                    "saving the copy leaves the original intact",&results)
+        state.drafts[copyID]?.name = "未保存的修改"; state.revert()
+        try require(!state.isDirty && state.current.name != "未保存的修改","revert restores the saved copy",&results)
+        state.create(); let newID = state.selectedID
+        state.drafts[newID]?.root = state.current.root.splittingPane(state.current.root.panes[0],axis:.horizontal)
+        state.selectedID = saved.id; state.drafts[saved.id]?.name = "阅读工作台"
+        try require(state.dirtyIDs.count == 2 && state.saveAll(),"save all commits independent drafts",&results)
+        try require(AppModel(storageURL:path).preferences.customLayouts.count == 3,"all layouts survive disk reload",&results)
+        state.selectedID = copyID; state.removeCurrent()
+        try require(!model.preferences.customLayouts.contains{$0.id == copyID} && AppModel(storageURL:path).preferences.customLayouts.count == 2,
+                    "delete removes only the selected layout from disk",&results)
+        state.selectedID = newID; _ = state.save(); state.removeCurrent()
+        try require(model.layouts.contains{$0.id == model.preferences.activeLayout},"deleting the active layout selects an existing fallback",&results)
+        try require(!model.saveLayout(LayoutPreset.builtins[0]) && !model.deleteLayout(LayoutPreset.builtins[0].id),"built-in layouts cannot be overwritten or deleted",&results)
+        let before = model.preferences.customLayouts
+        var invalid = edited; invalid.name = "   "
+        try require(!model.saveLayout(invalid) && model.preferences.customLayouts == before,"invalid edits leave saved layouts intact",&results)
+        let capped = AppModel(ephemeral:true)
+        capped.preferences.customLayouts = (0..<100).map { LayoutPreset(id:"fixture-\($0)",name:"布局 \($0)",root:.pane("a")) }
+        var existing = capped.preferences.customLayouts[0]; existing.name = "修改现有布局"
+        try require(capped.saveLayout(existing) && capped.preferences.customLayouts.count == 100,"the layout limit still permits editing existing layouts",&results)
+        try require(!capped.saveLayout(LayoutPreset(name:"超出上限",root:.pane("a"))),"the layout limit only rejects additional layouts",&results)
+        let blockedParent = fixture.appendingPathComponent("not-a-directory")
+        try Data("fixture".utf8).write(to:blockedParent)
+        let blocked = AppModel(storageURL:blockedParent.appendingPathComponent("preferences.json"))
+        let blockedState = LayoutManagerState(model:blocked); blockedState.create()
+        try require(!blockedState.save() && blocked.preferences.customLayouts.isEmpty && blockedState.isDirty && blockedState.error != nil,
+                    "write failure preserves the dirty draft and does not change saved state",&results)
+        let bytes = try Data(contentsOf:path)
+        state.create(); state.discardAll()
+        try require(state.dirtyIDs.isEmpty && (try Data(contentsOf:path)) == bytes,"discarding drafts does not modify saved settings",&results)
     }
     private static func interfaceChecks(delegate: AppDelegate, directory: URL, results: inout [[String:Any]]) async throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -73,7 +129,11 @@ private struct HandlePreview: NSViewRepresentable {
             try await capture(PreferencesView(model:model,edit:{}),size:NSSize(width:540,height:680),name:"settings-permission-off-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
             try await capture(PaletteView(model:model,target:sample,close:{},edit:{}),size:NSSize(width:360,height:560),name:"palette-permission-off-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
             model.trusted = true
-            try await capture(LayoutEditorView(model:model,draft:model.layout,close:{}),size:NSSize(width:560,height:500),name:"editor-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
+            let manager = LayoutManagerState(model:model)
+            try await capture(LayoutManagerView(state:manager),size:NSSize(width:880,height:620),name:"layouts-builtin-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
+            manager.duplicate()
+            try await capture(LayoutManagerView(state:manager),size:NSSize(width:880,height:620),name:"layouts-custom-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
+            try await capture(LayoutManagerView(state:manager),size:NSSize(width:780,height:580),name:"layouts-compact-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
             let handles = HStack(spacing:36) {
                 HandlePreview(axis:.horizontal).frame(width:18,height:64)
                 HandlePreview(axis:.vertical).frame(width:64,height:18)

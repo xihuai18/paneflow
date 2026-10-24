@@ -21,6 +21,8 @@ jobs:
         run: /bin/zsh scripts/build-app.sh release
       - name: Core checks
         run: swift run --disable-sandbox PaneFlowChecks
+      - name: Layout management checks
+        run: build/PaneFlow.app/Contents/MacOS/PaneFlow --verify-layouts build/checks/layouts.json
       - name: Package local DMG
         run: /bin/zsh scripts/package-dmg.sh
       - name: Package source

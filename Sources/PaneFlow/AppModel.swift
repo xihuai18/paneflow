@@ -48,7 +48,7 @@ struct WindowGroup {
 struct UndoEntry { var frames: [WindowMove]; var groups: [WindowGroup] }
 
 @MainActor final class AppModel: ObservableObject {
-    @Published var preferences = Preferences() { didSet { persist() } }
+    @Published var preferences = Preferences() { didSet { if !storingPreferences { persist() } } }
     @Published var windows: [LiveWindow] = []
     @Published var selectedIDs = Set<String>()
     @Published var groups: [WindowGroup] = []
@@ -69,11 +69,12 @@ struct UndoEntry { var frames: [WindowMove]; var groups: [WindowGroup] }
     private var scanGeneration = 0
     private let storage: URL?
     private var canPersist = true
+    private var storingPreferences = false
     var layouts: [LayoutPreset] { LayoutPreset.builtins + preferences.customLayouts }
     var layout: LayoutPreset { layouts.first { $0.id == preferences.activeLayout } ?? LayoutPreset.builtins[2] }
 
-    init(ephemeral: Bool = false) {
-        storage = ephemeral ? nil : FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.appendingPathComponent("PaneFlow/preferences.json")
+    init(ephemeral: Bool = false, storageURL: URL? = nil) {
+        storage = ephemeral ? nil : storageURL ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.appendingPathComponent("PaneFlow/preferences.json")
         guard let storage, FileManager.default.fileExists(atPath: storage.path) else { return }
         do {
             let value = try JSONDecoder().decode(Preferences.self, from: Data(contentsOf: storage))
@@ -84,12 +85,22 @@ struct UndoEntry { var frames: [WindowMove]; var groups: [WindowGroup] }
             preferences = value
         } catch { canPersist = false; notice = "设置文件无法读取，已保留原文件。请在设置中备份并重置后保存。" }
     }
+    private func writePreferences(_ value: Preferences) throws {
+        guard canPersist else { throw NSError(domain:"PaneFlowSettings",code:1,userInfo:[NSLocalizedDescriptionKey:"原设置无法读取，请先在设置中备份并重置。"] ) }
+        guard let storage else { return }
+        try FileManager.default.createDirectory(at: storage.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder().encode(value).write(to: storage, options: .atomic)
+    }
     private func persist() {
-        guard let storage, canPersist else { return }
+        do { try writePreferences(preferences) }
+        catch { notice = "设置未能保存：\(error.localizedDescription)" }
+    }
+    private func storePreferences(_ value: Preferences) -> Bool {
         do {
-            try FileManager.default.createDirectory(at: storage.deletingLastPathComponent(), withIntermediateDirectories: true)
-            try JSONEncoder().encode(preferences).write(to: storage, options: .atomic)
-        } catch { notice = "设置未能保存：\(error.localizedDescription)" }
+            try writePreferences(value)
+            storingPreferences = true; preferences = value; storingPreferences = false
+            return true
+        } catch { notice = "设置未能保存：\(error.localizedDescription)"; return false }
     }
     func backupAndResetSettings() {
         guard let storage else { return }
@@ -222,14 +233,31 @@ struct UndoEntry { var frames: [WindowMove]; var groups: [WindowGroup] }
             undoCount = history.count; busy = false; onGroupsChanged?()
         }
     }
-    func saveLayout(_ value: LayoutPreset) {
+    @discardableResult func saveLayout(_ value: LayoutPreset) -> Bool {
         do {
+            var value = value
+            value.name = value.name.trimmingCharacters(in:.whitespacesAndNewlines)
             try value.root.validate()
-            guard !value.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, value.name.count <= 80, preferences.customLayouts.count < 100 else { throw LayoutError.invalid }
-            if let index = preferences.customLayouts.firstIndex(where: { $0.id == value.id }) { preferences.customLayouts[index] = value }
-            else { preferences.customLayouts.append(value) }
-            preferences.activeLayout = value.id; notice = "已保存“\(value.name)”。"
-        } catch { notice = error.localizedDescription }
+            guard !value.name.isEmpty, value.name.count <= 80,
+                  !LayoutPreset.builtins.contains(where: { $0.id == value.id }) else { throw LayoutError.invalid }
+            var next = preferences
+            if let index = next.customLayouts.firstIndex(where: { $0.id == value.id }) { next.customLayouts[index] = value }
+            else {
+                guard next.customLayouts.count < 100 else { notice = "最多可保存 100 个自定义布局，请先删除不需要的布局。"; return false }
+                next.customLayouts.append(value)
+            }
+            next.activeLayout = value.id
+            guard storePreferences(next) else { return false }
+            notice = "已保存“\(value.name)”。"; return true
+        } catch { notice = error.localizedDescription; return false }
+    }
+    @discardableResult func deleteLayout(_ id: String) -> Bool {
+        guard let index = preferences.customLayouts.firstIndex(where: { $0.id == id }) else { return false }
+        var next = preferences
+        let name = next.customLayouts.remove(at:index).name
+        if next.activeLayout == id { next.activeLayout = next.customLayouts.first?.id ?? LayoutPreset.builtins[2].id }
+        guard storePreferences(next) else { return false }
+        notice = "已删除“\(name)”。现有窗口位置保持不变。"; return true
     }
     func openPractice() {
         guard let url = Bundle.main.url(forResource: "PaneFlow Practice", withExtension: "app") else { notice = "练习窗口未打包，请运行 scripts/build-app.sh。"; return }

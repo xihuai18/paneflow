@@ -13,7 +13,7 @@ final class PalettePanel: NSPanel {
     let model: AppModel
     private var palette: PalettePanel?
     private var preferences: NSWindow?
-    private var editor: NSWindow?
+    private var layoutManager: LayoutManagerWindowController?
     private var localMonitor: Any?
     private var globalMonitor: Any?
     private var paletteObservers: [NSObjectProtocol] = []
@@ -105,7 +105,7 @@ final class PalettePanel: NSPanel {
             if let event = NSApp.currentEvent, event.type == .keyDown, event.timestamp <= self.menuEndedAt { return }
             self.dismissPalette(panel)
         }
-        let view = PaletteView(model: model, target: target, close: dismiss, edit: { [weak self] in self?.showEditor() })
+        let view = PaletteView(model: model, target: target, close: dismiss, edit: { [weak self] in self?.showLayoutManager() })
         let available = screen.visible.insetBy(dx: 8, dy: 8)
         // Keyboard invocation anchors to the target titlebar; hover uses the real green button.
         let attachment = anchor ?? CGRect(x:target.frame.minX+40,y:target.frame.minY+8,width:14,height:14)
@@ -140,15 +140,16 @@ final class PalettePanel: NSPanel {
         }
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 540, height: 680), styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
         window.title = "窗合 PaneFlow"; window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: PreferencesView(model: model, edit: { [weak self] in self?.showEditor() }))
+        window.contentView = NSHostingView(rootView: PreferencesView(model: model, edit: { [weak self] in self?.showLayoutManager() }))
         window.center(); window.makeKeyAndOrderFront(nil); preferences = window; NSApp.activate(ignoringOtherApps: true)
     }
-    func showEditor() {
+    var hasUnsavedLayouts: Bool { layoutManager?.state.dirtyIDs.isEmpty == false }
+    func confirmLayoutChanges(_ completion: @escaping (Bool) -> Void) {
+        if let layoutManager { layoutManager.confirmChanges(completion) } else { completion(true) }
+    }
+    func showLayoutManager() {
         dismissPalette()
-        var draft = model.layout; draft.id = UUID().uuidString; draft.name = "我的布局"
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 560, height: 500), styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
-        window.title = "自定义布局"; window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: LayoutEditorView(model: model, draft: draft, close: { [weak window] in window?.close() }))
-        window.center(); window.makeKeyAndOrderFront(nil); editor = window; NSApp.activate(ignoringOtherApps: true)
+        if layoutManager == nil { layoutManager = LayoutManagerWindowController(model:model) }
+        layoutManager?.show()
     }
 }

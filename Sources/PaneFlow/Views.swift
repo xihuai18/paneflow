@@ -43,6 +43,7 @@ struct LayoutCanvas: View {
     var names: [String: String] = [:]
     var details: [String: String] = [:]
     var selected: String?
+    var editing = false
     var choose: (String) -> Void
     var changeRatio: ((String, Double) -> Void)? = nil
     var body: some View {
@@ -61,8 +62,8 @@ struct LayoutCanvas: View {
                             }.frame(width: frame.width, height: frame.height)
                                 .foregroundStyle(selected == slot ? Color.white : Color.primary)
                         }.buttonStyle(LayoutRegionStyle(selected:selected == slot)).position(x: frame.midX, y: frame.midY)
-                            .help(details[slot] ?? "点击放入当前窗口；已有窗口时交换位置。")
-                            .accessibilityLabel("\(names[slot] ?? "区域 \(index + 1)")，点击放置或选择")
+                            .help(editing ? "选择分区后，可拆分、合并或调整比例。" : (details[slot] ?? "点击放入当前窗口；已有窗口时交换位置。"))
+                            .accessibilityLabel("\(names[slot] ?? "区域 \(index + 1)")，\(editing ? "选择分区" : "点击放置")")
                     }
                 }
                 if let changeRatio {
@@ -129,7 +130,7 @@ struct PaletteView: View {
                         Picker("布局", selection: $model.preferences.activeLayout) {
                             ForEach(model.layouts) { Text($0.name).tag($0.id) }
                         }
-                        Button("自定义…", action: edit)
+                        Button("管理…", action: edit)
                     }.controlSize(.small)
                     Text("点击分区放置当前窗口，已有窗口时交换位置。")
                         .font(.system(size:11)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
@@ -179,50 +180,6 @@ struct PaletteView: View {
     }
 }
 
-struct LayoutEditorView: View {
-    @ObservedObject var model: AppModel
-    @State var draft: LayoutPreset
-    @State private var selected: String?
-    @State private var seamID = ""
-    var close: () -> Void
-    private var seams: [LayoutSeam] { (try? LayoutGeometry.make(draft.root, in: CGRect(x: 0, y: 0, width: 500, height: 260), gap: 5).seams) ?? [] }
-    var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            TextField("布局名称", text: $draft.name).textFieldStyle(.roundedBorder)
-            LayoutCanvas(root: draft.root, selected: selected, choose: { selected = $0 }, changeRatio: { key, ratio in
-                draft.root = draft.root.replacingRatio(key, with: ratio); seamID = key
-            }).frame(height: 250)
-            HStack {
-                Text("选中区域后拆分").font(.caption).foregroundStyle(.secondary)
-                Spacer()
-                Button("左右拆分") { split(.horizontal) }.disabled(draft.root.panes.count >= 16)
-                Button("上下拆分") { split(.vertical) }.disabled(draft.root.panes.count >= 16)
-            }
-            if !seams.isEmpty {
-                HStack {
-                    Picker("分隔线", selection: $seamID) {
-                        ForEach(Array(seams.enumerated()), id: \.element.id) { index, seam in Text("\(index + 1) · \(seam.axis == .horizontal ? "左右" : "上下")").tag(seam.id) }
-                    }.frame(maxWidth: 200)
-                    Text("比例")
-                    TextField("百分比", value: Binding(get: { (seams.first { $0.id == seamID }?.ratio ?? 0.5) * 100 }, set: { value in
-                        if value.isFinite { draft.root = draft.root.replacingRatio(seamID, with: max(0.001, min(0.999, value / 100))) }
-                    }), format: .number.precision(.fractionLength(0...1))).frame(width: 65).textFieldStyle(.roundedBorder)
-                    Text("%")
-                }
-            }
-            Text("拖动预览中的分隔条可调整比例。只保存布局形状，不保存窗口标题。").font(.caption).foregroundStyle(.secondary)
-            Spacer(minLength: 0)
-            HStack { Button("取消", action: close); Spacer(); Button("保存布局") { model.saveLayout(draft); close() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction) }
-        }.padding(22).frame(minWidth: 500, minHeight: 470).background(Color(nsColor:.windowBackgroundColor))
-            .onAppear { selected = draft.root.panes.first; seamID = seams.first?.id ?? "" }
-    }
-    private func split(_ axis: SplitAxis) {
-        guard let pane = selected ?? draft.root.panes.first, draft.root.panes.count < 16 else { return }
-        draft.root = draft.root.splittingPane(pane, axis: axis)
-        seamID = seams.last?.id ?? ""
-    }
-}
-
 struct PreferencesView: View {
     @ObservedObject var model: AppModel
     var edit: () -> Void
@@ -257,7 +214,7 @@ struct PreferencesView: View {
                 HStack { Text("窗口间距"); Slider(value: $model.preferences.gap, in: 0...40, step: 1); Text("\(Int(model.preferences.gap)) pt").monospacedDigit().frame(width: 48) }
                 HStack { Text("屏幕留边"); Slider(value: $model.preferences.margin, in: 0...80, step: 1); Text("\(Int(model.preferences.margin)) pt").monospacedDigit().frame(width: 48) }
                 Text("间距修改会用于下一次放置或排列。").font(.caption).foregroundStyle(.secondary)
-                Button("自定义布局…", action: edit)
+                Button("布局管理…", action: edit)
             }
             Section("使用") {
                 Text("⌃⌥ Space：打开或收起布局面板\n点击分区：放置当前窗口，占用时交换\n勾选多个窗口：排列后建立联动\n⌥ 拖动标题栏：放入高亮分区或交换窗口\n⌃ 拖动：临时跳过磁吸\n拖动窗口之间的分隔条：联动缩放\n点击外部或按 Esc：收起面板")

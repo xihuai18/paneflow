@@ -40,7 +40,21 @@ swift run --disable-sandbox PaneFlowChecks
 
 核心检查覆盖布局序列化、嵌套最小尺寸、负坐标显示器、磁吸滞回、共享边界、交换，以及异步窗口写入与取消。
 
-界面渲染需要桌面会话，生成浅色/深色、已授权/未授权的面板、设置、编辑器和联动分隔条 PNG：
+布局管理和磁盘保存检查无需辅助功能权限，使用独立临时设置文件，覆盖更新已有配置、复制、新建、删除、草稿保留、保存失败与重载：
+
+```sh
+build/PaneFlow.app/Contents/MacOS/PaneFlow --verify-layouts build/checks/layouts.json
+```
+
+交互检查可使用隔离的布局管理预览；这个模式只保留内存草稿，不读取或改写个人设置，也不启用窗口管理手势：
+
+```sh
+build/PaneFlow.app/Contents/MacOS/PaneFlow --preview-layouts
+```
+
+检查列表切换、保存修改、另存为、还原选择，以及关闭或退出时的未保存提示。正式应用的这些入口复用同一个布局管理窗口。
+
+界面渲染需要桌面会话，生成浅色/深色、已授权/未授权的面板、设置、布局管理页和联动分隔条 PNG：
 
 ```sh
 build/PaneFlow.app/Contents/MacOS/PaneFlow --verify-interface build/checks/interface.json
@@ -56,7 +70,7 @@ open -n -W "$PWD/build/PaneFlow.app" --args --verify-native "$PWD/build/checks/n
 
 验证时保持练习应用位于前台；前台切换会使分隔条按设计隐藏，从而影响遮挡恢复检查。出现失败时保留原报告和当时的前台应用信息，不将复测通过当作原因已修复。自动检查不模拟物理鼠标，也不代表所有第三方应用兼容；绿按钮悬停、标题拖动、磁吸手感仍需真实鼠标验证。面板还需交互检查：布局菜单选择和 Esc、外部点击、关闭按钮、自定义编辑器，以及仅用练习窗口验证成功收起和失败保留。
 
-GitHub CI 执行构建、核心检查、本地 DMG 与源码打包；未将需要桌面和权限的检查算作 CI 验收。
+GitHub CI 执行构建、核心检查、布局管理保存检查、本地 DMG 与源码打包；未将需要桌面和权限的检查算作 CI 验收。
 
 ## 源码包与发布
 

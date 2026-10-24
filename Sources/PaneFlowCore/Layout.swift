@@ -35,6 +35,15 @@ public indirect enum LayoutNode: Codable, Equatable, Sendable {
             return .split(id: id, axis: direction, ratio: value, first: first.splittingPane(pane, axis: axis, ratio: ratio), second: second.splittingPane(pane, axis: axis, ratio: ratio))
         }
     }
+    public func mergingPane(_ pane: String) -> LayoutNode {
+        switch self {
+        case .pane: return self
+        case let .split(id, axis, ratio, first, second):
+            if case .pane(let id) = first, id == pane { return second }
+            if case .pane(let id) = second, id == pane { return first }
+            return .split(id:id,axis:axis,ratio:ratio,first:first.mergingPane(pane),second:second.mergingPane(pane))
+        }
+    }
     public func validate(depth: Int = 0) throws {
         guard depth <= 8, panes.count <= 16, Set(panes).count == panes.count, Set(splitIDs).count == splitIDs.count,
               panes.allSatisfy({ !$0.isEmpty && $0.count < 128 }) else { throw LayoutError.invalid }

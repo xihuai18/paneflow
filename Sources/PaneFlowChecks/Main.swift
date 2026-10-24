@@ -27,6 +27,11 @@ import PaneFlowCore
         let ratio = try outer.ratio(at:200, gap:8, minimums:minimums)
         let resized = try LayoutGeometry.make(nested.replacingRatio("outer", with:ratio), in:CGRect(x:0,y:0,width:2000,height:500),gap:8,minimums:minimums)
         check("nested 90/10 minimum remains intact", resized.panes["b"]!.width >= 100)
+        let merged = nested.mergingPane("b")
+        check("merging a nested pane preserves its outer split", merged == .split(id:"outer",axis:.horizontal,ratio:0.5,first:.pane("a"),second:.pane("c")))
+        check("merging an outer pane promotes its sibling subtree", nested.mergingPane("c").panes == ["a","b"])
+        check("merging an unknown pane leaves the layout intact", nested.mergingPane("missing") == nested)
+        check("merging the only pane is a no-op", LayoutNode.pane("a").mergingPane("a") == .pane("a"))
         let duplicate = LayoutNode.split(id:"same",axis:.horizontal,ratio:0.5,first:.pane("a"),second:.split(id:"same",axis:.vertical,ratio:0.5,first:.pane("b"),second:.pane("c")))
         do { try duplicate.validate(); check("reject duplicate separators", false) } catch { passed += 1 }
         let narrow = LayoutPreset.builtins[0].root.replacingRatio("main", with:1.0/30.0)

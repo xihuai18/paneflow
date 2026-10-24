@@ -37,6 +37,12 @@ final class GlobalShortcut {
     }
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        if Verification.previewLayouts {
+            let menu = NSMenu(), item = NSMenuItem(), application = NSMenu()
+            application.addItem(withTitle:"退出窗合",action:#selector(NSApplication.terminate(_:)),keyEquivalent:"q")
+            item.submenu = application; menu.addItem(item); NSApp.mainMenu = menu
+            panels.showLayoutManager(); return
+        }
         if Verification.requested {
             Task { await Verification.run(delegate: self) }; return
         }
@@ -44,7 +50,7 @@ final class GlobalShortcut {
         status.button?.image = PaneFlowBrand.image(size:18,template:true)
         status.button?.toolTip = "窗合 PaneFlow"; self.status = status
         let menu = NSMenu(); menu.delegate = self
-        for (title, selector, key) in [("打开布局面板", #selector(openPalette), ""), ("自定义布局…", #selector(openEditor), ""),
+        for (title, selector, key) in [("打开布局面板", #selector(openPalette), ""), ("布局管理…", #selector(openEditor), ""),
                                        ("设置…", #selector(openSettings), ","), ("打开练习窗口", #selector(openPractice), ""),
                                        ("撤销窗口操作", #selector(undo), ""), ("暂停窗口管理", #selector(pause), "")] {
             let item = NSMenuItem(title: title, action: selector, keyEquivalent: key); item.target = self; menu.addItem(item)
@@ -100,13 +106,18 @@ final class GlobalShortcut {
         gestures.paletteContains = { [weak panels] point in panels?.contains(point) ?? false }
         panels.onDismiss = { [weak gestures] in gestures?.suppressCurrentHover() }
     }
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard panels.hasUnsavedLayouts else { return .terminateNow }
+        panels.confirmLayoutChanges { sender.reply(toApplicationShouldTerminate:$0) }
+        return .terminateLater
+    }
     func applicationWillTerminate(_ notification: Notification) { panels.dismissPalette(); gestures.stop(); model.access.shutdown(); overlays.stop(); timer?.invalidate(); observers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) } }
     func menuWillOpen(_ menu: NSMenu) {
         menu.items.first { $0.action == #selector(pause) }?.title = model.paused ? "继续窗口管理" : "暂停窗口管理"
         menu.items.first { $0.action == #selector(undo) }?.isEnabled = model.undoCount > 0 && !model.busy
     }
     @objc func openPalette() { panels.openFocused() }
-    @objc func openEditor() { panels.showEditor() }
+    @objc func openEditor() { panels.showLayoutManager() }
     @objc func openSettings() { panels.showPreferences() }
     @objc func openPractice() { model.openPractice() }
     @objc func undo() { model.undo() }
@@ -121,7 +132,7 @@ final class GlobalShortcut {
             catch { fputs("Could not export app icon\n",stderr); exit(1) }
         }
         let app = NSApplication.shared
-        let delegate = AppDelegate(ephemeral: Verification.requested)
+        let delegate = AppDelegate(ephemeral: Verification.requested || Verification.previewLayouts)
         app.delegate = delegate
         withExtendedLifetime(delegate) { app.run() }
     }
