@@ -132,12 +132,24 @@ private struct HandlePreview: NSViewRepresentable {
         do {
             try require(windows.count==3,"three separate-process practice windows",&results)
             guard let desktop = model.desktop(for:windows[0].frame) else { throw LayoutError.invalid }
+            let application = AXUIElementCreateApplication(app.pid)
+            let exerciseEnhanced = !NSWorkspace.shared.isVoiceOverEnabled && !NSWorkspace.shared.isSwitchControlEnabled
+            if exerciseEnhanced {
+                _ = AXUIElementSetAttributeValue(application,"AXEnhancedUserInterface" as CFString,kCFBooleanTrue)
+                try require(WindowAccess.value(application,"AXEnhancedUserInterface") as? Bool == true,"practice enhanced accessibility is enabled before adjustment",&results)
+            }
             model.windows = windows
-            for index in [0,1,3] {
+            for margin in [10.0,0.0] {
+              model.preferences.margin = margin
+              for index in [0,1,3] {
                 var group = model.makeGroup(layout:LayoutPreset.builtins[index],desktop:desktop)
                 for (slot,window) in zip(group.preset.root.panes,windows) { group.members[slot] = window }
                 let success = await model.commit(try group.moves(),groups:[group])
-                try require(success,"apply \(group.preset.name) with actual AX readback",&results)
+                try require(success,"apply \(group.preset.name) with margin \(Int(margin)) and actual AX readback",&results)
+              }
+            }
+            if exerciseEnhanced {
+                try require(WindowAccess.value(application,"AXEnhancedUserInterface") as? Bool == true,"arrangement restores practice enhanced accessibility",&results)
             }
             guard var group = model.groups.first, let seam = try group.geometry().seams.first else { throw LayoutError.invalid }
             helper.activate(options:.activateAllWindows)
@@ -166,6 +178,10 @@ private struct HandlePreview: NSViewRepresentable {
                         && childAfter[upper.id].map{abs($0.height-upperAfter.height)>10} == true
                         && childAfter[lower.id].map{abs($0.minY-lowerAfter.minY)>10} == true,
                         "right horizontal boundary resizes both right windows and preserves the left frame",&results)
+            if exerciseEnhanced {
+                _ = await model.access.read(group.windows)
+                try require(WindowAccess.value(application,"AXEnhancedUserInterface") as? Bool == true,"linked resizing restores practice enhanced accessibility",&results)
+            }
             helper.activate(options:.activateAllWindows)
             for _ in 0..<15 {
                 if NSWorkspace.shared.frontmostApplication?.processIdentifier == helper.processIdentifier { break }

@@ -65,7 +65,7 @@ private struct MouseGesture {
     }
     private func endAdjustment() {
         model.access.endInteractiveAdjustment { [weak model] restored in
-            if !restored { Task { @MainActor in model?.notice = "Edge 的辅助功能模式尚未确认恢复；请退出并重新打开 Edge。" } }
+            if !restored { Task { @MainActor in model?.notice = "应用的辅助功能模式尚未确认恢复；请退出并重新打开相关应用。" } }
         }
     }
     private func event(_ event: NSEvent) {

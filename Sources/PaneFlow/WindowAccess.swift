@@ -220,8 +220,8 @@ final class WindowAccess: @unchecked Sendable {
             let app = AXUIElementCreateApplication(window.app.pid)
             AXUIElementSetMessagingTimeout(app, 0.12)
             let original = Self.value(app, "AXEnhancedUserInterface") as? Bool
-            // Edge can animate each AX write independently. Preserve its original accessibility mode.
-            if original == true, suspendEnhancedUI, window.app.bundleID == "com.microsoft.edgemac" {
+            // These verified applications can animate each AX write independently. Preserve their original mode.
+            if original == true, suspendEnhancedUI, ["com.microsoft.edgemac", "app.paneflow.practice"].contains(window.app.bundleID) {
                 restore[window.app.pid] = app
                 _ = AXUIElementSetAttributeValue(app, "AXEnhancedUserInterface" as CFString, kCFBooleanFalse)
             }
@@ -311,7 +311,7 @@ final class WindowAccess: @unchecked Sendable {
                 let unresolved = self.restoreEnhancedUI(restore)
                 self.enhancedToRestore.merge(unresolved) { old, _ in old }
                 self.responsiveApps = previousResponsiveApps
-                if !unresolved.isEmpty { report.warning = "Edge 的辅助功能模式尚未确认恢复；请退出并重新打开 Edge。" }
+                if !unresolved.isEmpty { report.warning = "应用的辅助功能模式尚未确认恢复；请退出并重新打开相关应用。" }
                 continuation.resume(returning: report)
             }
         }
