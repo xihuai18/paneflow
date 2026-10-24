@@ -31,7 +31,7 @@ import PaneFlowCore
         drafts[draft.id] = draft; order.append(draft.id); selectedID = draft.id; error = nil
     }
     func duplicate() {
-        let draft = LayoutPreset(name:uniqueName(current.name+" 副本"),root:current.root)
+        let draft = LayoutPreset(name:uniqueName(current.name+" 副本"),root:current.root,emptyPanes:current.emptyPanes)
         drafts[draft.id] = draft; order.append(draft.id); selectedID = draft.id; error = nil
     }
     @discardableResult func save(_ id: String? = nil) -> Bool {
@@ -104,11 +104,12 @@ import PaneFlowCore
 
 private struct LayoutThumbnail: View {
     let root: LayoutNode
+    var emptyPanes = Set<String>()
     var body: some View {
         Canvas { context, size in
             if let geometry = try? LayoutGeometry.make(root,in:CGRect(origin:.zero,size:size),gap:2,scale:2) {
-                for rect in geometry.panes.values {
-                    context.fill(Path(roundedRect:rect,cornerRadius:2),with:.color(.secondary.opacity(0.45)))
+                for (id,rect) in geometry.panes {
+                    context.fill(Path(roundedRect:rect,cornerRadius:2),with:.color(.secondary.opacity(emptyPanes.contains(id) ? 0.1 : 0.45)))
                 }
             }
         }.frame(width:38,height:27).accessibilityHidden(true)
@@ -133,7 +134,7 @@ struct LayoutManagerView: View {
                 Divider()
                 HStack {
                     Button(action:state.create) { Label("新建",systemImage:"plus") }.help("新建一个空白布局")
-                    Button(action:state.duplicate) { Image(systemName:"doc.on.doc") }.help("复制选中布局").accessibilityLabel("复制布局")
+                    Button(action:state.duplicate) { Label("复制",systemImage:"doc.on.doc") }.help("复制选中布局").accessibilityLabel("复制布局")
                     Spacer()
                     Button(role:.destructive) { confirmDelete = true } label: { Image(systemName:"trash") }
                         .disabled(state.isBuiltin).help("删除选中布局").accessibilityLabel("删除布局")
@@ -148,10 +149,10 @@ struct LayoutManagerView: View {
     }
     private func row(_ layout: LayoutPreset) -> some View {
         HStack(spacing:10) {
-            LayoutThumbnail(root:layout.root)
+            LayoutThumbnail(root:layout.root,emptyPanes:layout.emptyPanes)
             VStack(alignment:.leading,spacing:3) {
                 Text(layout.name).lineLimit(1)
-                Text("\(layout.root.panes.count) 个区域").font(.caption).foregroundStyle(.secondary)
+                Text("\(layout.windowPanes.count) 个窗口区域" + (layout.emptyPanes.isEmpty ? "" : " · \(layout.emptyPanes.count) 处留白")).font(.caption).foregroundStyle(.secondary)
             }
             Spacer(minLength:0)
             if state.dirtyIDs.contains(layout.id) { Image(systemName:"circle.fill").font(.system(size:6)).accessibilityLabel("未保存") }
@@ -166,45 +167,52 @@ private struct LayoutDetailsView: View {
     private var draft: Binding<LayoutPreset> {
         Binding(get:{state.current},set:{ if !state.isBuiltin { state.drafts[state.selectedID] = $0 } })
     }
-    private var seams: [LayoutSeam] { (try? LayoutGeometry.make(state.current.root,in:CGRect(x:0,y:0,width:500,height:260),gap:5).seams) ?? [] }
+    private var seams: [LayoutSeam] { (try? LayoutGeometry.make(state.current.root,in:CGRect(x:0,y:0,width:10000,height:10000),gap:0).seams) ?? [] }
+    private var selectedIsEmpty: Bool { selected.map { state.current.emptyPanes.contains($0) } ?? false }
+    private var position: Double {
+        guard let seam = seams.first(where:{$0.id == seamID}) else { return 50 }
+        return (seam.axis == .horizontal ? seam.line.midX : seam.line.midY)/100
+    }
     var body: some View {
-        VStack(alignment:.leading,spacing:16) {
-            HStack {
-                Text(state.isBuiltin ? "内置布局" : "编辑布局").font(.title2).fontWeight(.semibold)
-                Spacer()
-                if state.isDirty { Text("未保存").font(.caption).foregroundStyle(.secondary) }
-            }
+        VStack(alignment:.leading,spacing:14) {
             if state.isBuiltin { Text(state.current.name).font(.title3); Text("内置布局保持不变。复制一份即可自由编辑。").font(.callout).foregroundStyle(.secondary) }
-            else { TextField("布局名称",text:draft.name).textFieldStyle(.roundedBorder).accessibilityLabel("布局名称") }
-            LayoutCanvas(root:state.current.root,selected:selected,editing:true,choose:{selected=$0},changeRatio:state.isBuiltin ? nil : { key,ratio in
-                draft.wrappedValue.root = state.current.root.replacingRatio(key,with:ratio); seamID = key
-            }).frame(height:240)
+            else {
+                HStack {
+                    TextField("布局名称",text:draft.name).textFieldStyle(.roundedBorder).accessibilityLabel("布局名称")
+                    if state.isDirty { Text("未保存").font(.caption).foregroundStyle(.secondary) }
+                }
+            }
+            LayoutCanvas(root:state.current.root,emptyPanes:state.current.emptyPanes,selected:selected,editing:true,selectedLine:seamID,choose:{selected=$0},moveLine:state.isBuiltin ? nil : { key,percent in
+                draft.wrappedValue.root = state.current.root.movingLine(key,toPercent:percent); seamID = key
+            },selectLine:{seamID=$0}).frame(height:260)
             if !state.isBuiltin {
                 HStack {
-                    Button("左右拆分") { split(.horizontal) }.disabled(state.current.root.panes.count>=16)
-                    Button("上下拆分") { split(.vertical) }.disabled(state.current.root.panes.count>=16)
+                    Button("加竖线") { split(.horizontal) }.disabled(state.current.root.panes.count>=16)
+                    Button("加横线") { split(.vertical) }.disabled(state.current.root.panes.count>=16)
+                    Button(selectedIsEmpty ? "取消留白" : "留白") {
+                        guard let selected else { return }
+                        if selectedIsEmpty { draft.wrappedValue.emptyPanes.remove(selected) }
+                        else { draft.wrappedValue.emptyPanes.insert(selected) }
+                    }.disabled(!selectedIsEmpty && state.current.windowPanes.count <= 1)
                     Button("合并区域") {
                         guard let selected else { return }
-                        draft.wrappedValue.root = state.current.root.mergingPane(selected); resetSelection()
-                    }.disabled(state.current.root.panes.count<=1).help("移除选中的分区，将空间合并到相邻分区")
+                        var value = state.current; value.root = value.root.mergingPane(selected)
+                        value.emptyPanes.formIntersection(Set(value.root.panes)); draft.wrappedValue = value; resetSelection()
+                    }.disabled(state.current.root.panes.count<=1 || (!selectedIsEmpty && state.current.windowPanes.count<=1)).help("选择要合并掉的区域，将空间交给相邻区域")
                 }
-                if !seams.isEmpty {
+                if let seam = seams.first(where:{$0.id == seamID}) {
                     HStack {
-                        Picker("分隔线",selection:$seamID) {
-                            ForEach(Array(seams.enumerated()),id:\.element.id) { index,seam in Text("\(index+1) · \(seam.axis == .horizontal ? "左右" : "上下")").tag(seam.id) }
-                        }.frame(maxWidth:230)
-                        Text("比例")
-                        TextField("百分比",value:Binding(get:{(seams.first{$0.id==seamID}?.ratio ?? 0.5)*100},set:{value in
-                            if value.isFinite { draft.wrappedValue.root = state.current.root.replacingRatio(seamID,with:max(0.001,min(0.999,value/100))) }
-                        }),format:.number.precision(.fractionLength(0...1))).frame(width:65).textFieldStyle(.roundedBorder)
+                        Text(seam.axis == .horizontal ? "竖线位置" : "横线位置")
+                        TextField("百分比",value:Binding(get:{position},set:changePosition),format:.number.precision(.fractionLength(0...2))).frame(width:65).textFieldStyle(.roundedBorder)
                         Text("%")
+                        Stepper("线的位置",onIncrement:{changePosition(position+1)},onDecrement:{changePosition(position-1)}).labelsHidden().help("每次调整 1%")
                     }
                 }
-                Text("选中区域后可拆分或合并，拖动分隔条可调整比例。").font(.caption).foregroundStyle(.secondary)
+                Text("留白处不放窗口 · 拖线微调 1%").font(.caption).foregroundStyle(.secondary)
             }
             Spacer(minLength:0)
             if let error = state.error { Text(error).foregroundStyle(.red).font(.callout).fixedSize(horizontal:false,vertical:true) }
-            else { Text("保存只更新布局配置。下次排列时生效，不会移动现有窗口。").font(.caption).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true) }
+            else { Text("保存后，下次排列窗口时生效。").font(.caption).foregroundStyle(.secondary) }
             Divider()
             HStack {
                 if state.isBuiltin {
@@ -212,7 +220,6 @@ private struct LayoutDetailsView: View {
                     Spacer(); Button("复制并编辑",action:state.duplicate).buttonStyle(.borderedProminent)
                 } else {
                     Button("还原修改",action:state.revert).disabled(!state.isDirty || !state.hasSavedVersion)
-                    Button("另存为新布局",action:state.duplicate)
                     Spacer()
                     Button(state.hasSavedVersion ? "保存修改" : "保存布局") { state.save() }
                         .buttonStyle(.borderedProminent).keyboardShortcut("s",modifiers:.command).disabled(!state.isDirty)
@@ -223,14 +230,21 @@ private struct LayoutDetailsView: View {
             .onChange(of:state.selectedID) { _,_ in resetSelection() }
             .onChange(of:state.current.root) { _,root in
                 if selected.map({root.panes.contains($0)}) != true { selected = root.panes.first }
-                if !root.splitIDs.contains(seamID) { seamID = seams.first?.id ?? "" }
+                if !seamID.isEmpty, !root.splitIDs.contains(seamID) { seamID = "" }
             }
     }
-    private func resetSelection() { selected = state.current.root.panes.first; seamID = seams.first?.id ?? "" }
+    private func resetSelection() { selected = state.current.root.panes.first; seamID = "" }
+    private func changePosition(_ percent: Double) {
+        guard percent.isFinite else { return }
+        draft.wrappedValue.root = state.current.root.movingLine(seamID,toPercent:percent)
+    }
     private func split(_ axis: SplitAxis) {
         guard let pane = selected ?? state.current.root.panes.first else { return }
         let previous = Set(state.current.root.splitIDs)
-        draft.wrappedValue.root = state.current.root.splittingPane(pane,axis:axis)
+        let previousPanes = Set(state.current.root.panes)
+        var value = state.current; value.root = value.root.splittingPane(pane,axis:axis)
+        if value.emptyPanes.contains(pane) { value.emptyPanes.formUnion(Set(value.root.panes).subtracting(previousPanes)) }
+        draft.wrappedValue = value
         seamID = state.current.root.splitIDs.first { !previous.contains($0) } ?? ""
     }
 }

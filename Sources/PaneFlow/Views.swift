@@ -40,43 +40,58 @@ struct PermissionStatus: View {
 
 struct LayoutCanvas: View {
     var root: LayoutNode
+    var emptyPanes = Set<String>()
     var names: [String: String] = [:]
     var details: [String: String] = [:]
     var selected: String?
     var editing = false
+    var selectedLine: String?
     var choose: (String) -> Void
-    var changeRatio: ((String, Double) -> Void)? = nil
+    var moveLine: ((String, Double) -> Void)? = nil
+    var selectLine: ((String) -> Void)? = nil
     var body: some View {
         GeometryReader { proxy in
             let bounds = CGRect(origin: .zero, size: proxy.size)
-            let geometry = try? LayoutGeometry.make(root, in: bounds, gap: 5, scale: 2)
+            let gap = editing ? 0.0 : 5.0
+            let geometry = try? LayoutGeometry.make(root, in: bounds, gap: gap, scale: 2)
             ZStack(alignment: .topLeading) {
                 ForEach(Array(root.panes.enumerated()), id: \.element) { index, slot in
                     if let frame = geometry?.panes[slot] {
+                        let empty = emptyPanes.contains(slot)
+                        let number = (root.panes.filter { !emptyPanes.contains($0) }.firstIndex(of:slot) ?? index)+1
+                        let label = empty ? "留白" : (names[slot] ?? "区域 \(number)")
                         Button { choose(slot) } label: {
                             VStack(spacing: 5) {
-                                Text(names[slot] ?? "区域 \(index + 1)").font(.system(size: 11, weight: .medium)).lineLimit(1)
+                                Text(label).font(.system(size: 11, weight: .medium)).lineLimit(1)
                                 if let detail = details[slot], !detail.isEmpty {
                                     Text(detail).font(.system(size:10)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                                 }
                             }.frame(width: frame.width, height: frame.height)
-                                .foregroundStyle(selected == slot ? Color.white : Color.primary)
-                        }.buttonStyle(LayoutRegionStyle(selected:selected == slot)).position(x: frame.midX, y: frame.midY)
-                            .help(editing ? "选择分区后，可拆分、合并或调整比例。" : (details[slot] ?? "点击放入当前窗口；已有窗口时交换位置。"))
-                            .accessibilityLabel("\(names[slot] ?? "区域 \(index + 1)")，\(editing ? "选择分区" : "点击放置")")
+                                .foregroundStyle(Color.primary)
+                        }.buttonStyle(LayoutRegionStyle(selected:selected == slot,empty:empty)).position(x: frame.midX, y: frame.midY)
+                            .disabled(empty && !editing)
+                            .help(editing ? "选择区域后添加横线、竖线或设为留白。" : (empty ? "留白区域不会放入窗口。" : (details[slot] ?? "点击放入当前窗口；已有窗口时交换位置。")))
+                            .accessibilityLabel("\(label)，\(editing ? "选择区域" : empty ? "不放窗口" : "点击放置")")
                     }
                 }
-                if let changeRatio {
+                if let moveLine {
                     ForEach(geometry?.seams ?? [], id: \.id) { seam in
                         let vertical = seam.axis == .horizontal
-                        RoundedRectangle(cornerRadius: 2).fill(Color.accentColor.opacity(0.65))
+                        RoundedRectangle(cornerRadius: 2).fill(selectedLine == seam.id ? Color.accentColor : Color.secondary.opacity(0.55))
                             .frame(width: vertical ? 4 : 34, height: vertical ? 34 : 4)
                             .padding(vertical ? .horizontal : .vertical, 5)
                             .contentShape(Rectangle()).position(x: seam.line.midX, y: seam.line.midY)
-                            .gesture(DragGesture(coordinateSpace: .named("layout-editor")).onChanged { value in
+                            .onHover { inside in (inside ? (vertical ? NSCursor.resizeLeftRight : NSCursor.resizeUpDown) : NSCursor.arrow).set() }
+                            .help("拖动分隔线，每次调整 1%；点击可输入位置。")
+                            .gesture(DragGesture(minimumDistance:1,coordinateSpace: .named("layout-editor")).onChanged { value in
                                 let coordinate = vertical ? value.location.x : value.location.y
-                                if let ratio = try? seam.ratio(at: coordinate, gap: 5, minimums: [:], scale: 2) { changeRatio(seam.id, ratio) }
+                                let extent = vertical ? bounds.width : bounds.height
+                                moveLine(seam.id,LayoutPreset.snappedPercent(coordinate/extent*100))
                             })
+                            .onTapGesture { selectLine?(seam.id) }
+                            .accessibilityLabel(vertical ? "竖向分隔线" : "横向分隔线")
+                            .accessibilityAddTraits(.isButton)
+                            .accessibilityAction { selectLine?(seam.id) }
                     }
                 }
             }.coordinateSpace(name: "layout-editor")
@@ -86,12 +101,13 @@ struct LayoutCanvas: View {
 
 private struct LayoutRegionStyle: ButtonStyle {
     let selected: Bool
+    var empty = false
     @State private var hovered = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
-            .background(selected ? Color.accentColor : (hovered || configuration.isPressed ? Color.accentColor.opacity(0.14) : Color(nsColor:.controlBackgroundColor).opacity(0.35)),in:RoundedRectangle(cornerRadius:7))
-            .overlay(RoundedRectangle(cornerRadius:7).strokeBorder(hovered || selected ? Color.accentColor : Color(nsColor:.separatorColor),lineWidth:1))
+            .background(hovered || configuration.isPressed || selected ? Color.accentColor.opacity(0.12) : Color(nsColor:.controlBackgroundColor).opacity(empty ? 0.08 : 0.35),in:RoundedRectangle(cornerRadius:7))
+            .overlay(RoundedRectangle(cornerRadius:7).strokeBorder(hovered || selected ? Color.accentColor : Color(nsColor:.separatorColor),style:StrokeStyle(lineWidth:1,dash:empty ? [4,3] : [])))
             .contentShape(RoundedRectangle(cornerRadius:7))
             .animation(reduceMotion ? nil : .easeOut(duration:0.10),value:hovered)
             .onHover { hovered = $0 }
@@ -105,7 +121,7 @@ struct PaletteView: View {
     let edit: () -> Void
     var destination: WindowGroup? {
         guard let desktop = model.desktop(for: target.frame) else { return nil }
-        return model.groups.last { $0.screenID == desktop.id && $0.preset.id == model.layout.id && $0.preset.root == model.layout.root }
+        return model.groups.last { $0.screenID == desktop.id && $0.preset.id == model.layout.id && $0.preset.root == model.layout.root && $0.preset.emptyPanes == model.layout.emptyPanes }
             ?? model.makeGroup(layout: model.layout, desktop: desktop)
     }
     var body: some View {
@@ -134,25 +150,29 @@ struct PaletteView: View {
                     }.controlSize(.small)
                     Text("点击分区放置当前窗口，已有窗口时交换位置。")
                         .font(.system(size:11)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
-                    LayoutCanvas(root: model.layout.root, names: destination?.members.mapValues { $0.app.name } ?? [:], details:destination?.members.mapValues { $0.title } ?? [:]) { slot in
+                    LayoutCanvas(root: model.layout.root, emptyPanes:model.layout.emptyPanes, names: destination?.members.mapValues { $0.app.name } ?? [:], details:destination?.members.mapValues { $0.title } ?? [:]) { slot in
                         if let destination { model.place(target, slot: slot, in: destination) { success in if success { close() } } }
                     }.frame(height: 108).disabled(model.busy || !model.trusted)
                     Divider()
                     HStack {
                         Text("排列多个窗口").font(.system(size:12,weight:.semibold))
                         Spacer()
-                        Text("\(model.selectedIDs.count)/\(model.layout.root.panes.count)").font(.caption).foregroundStyle(.secondary)
+                        Text("\(model.selectedIDs.count)/\(model.layout.windowPanes.count)").font(.caption).foregroundStyle(.secondary)
                         Button("刷新") { Task { await model.refresh(focused: target) } }.controlSize(.small)
                     }
-                    Text("最多勾选 \(model.layout.root.panes.count) 个窗口，按列表顺序填入分区。")
+                    Text("最多勾选 \(model.layout.windowPanes.count) 个窗口，留白区域会自动跳过。")
                         .font(.system(size:11)).foregroundStyle(.secondary)
                     List {
                         ForEach(model.windows) { window in
                             Toggle(isOn: Binding(get: { model.selectedIDs.contains(window.id) }, set: { enabled in
-                                if enabled { model.selectedIDs.insert(window.id) } else { model.selectedIDs.remove(window.id) }
+                                if enabled {
+                                    if model.layout.windowPanes.count == 1 { model.selectedIDs = [window.id] }
+                                    else if model.selectedIDs.count < model.layout.windowPanes.count { model.selectedIDs.insert(window.id) }
+                                } else { model.selectedIDs.remove(window.id) }
                             })) {
                                 Text(window.label).font(.system(size: 12)).lineLimit(1).truncationMode(.middle).help(window.label)
                             }.toggleStyle(.checkbox)
+                                .disabled(model.layout.windowPanes.count > 1 && model.selectedIDs.count >= model.layout.windowPanes.count && !model.selectedIDs.contains(window.id))
                         }
                         if model.windows.isEmpty { Text("没有找到可调整的窗口，请先打开一个普通窗口。").font(.caption).foregroundStyle(.secondary) }
                     }.listStyle(.inset).scrollContentBackground(.hidden).frame(minHeight:100,maxHeight:.infinity)
@@ -163,7 +183,7 @@ struct PaletteView: View {
                     Button(model.busy ? "正在调整…" : (model.selectedIDs.count > 1 ? "排列并联动" : "放置所选窗口")) {
                         model.arrangeSelected { success in if success { close() } }
                     }
-                        .buttonStyle(.borderedProminent).disabled(model.busy || !model.trusted || model.selectedIDs.isEmpty)
+                        .buttonStyle(.borderedProminent).disabled(model.busy || !model.trusted || model.selectedIDs.isEmpty || model.selectedIDs.count > model.layout.windowPanes.count)
                         .help("按列表顺序排列所选窗口，成功后自动收起面板。")
                     Button("撤销", action: model.undo).disabled(model.busy || model.undoCount == 0)
                     Spacer()
@@ -177,6 +197,11 @@ struct PaletteView: View {
             }.padding(.horizontal,14).padding(.vertical,12).controlSize(.small)
         }.frame(minWidth: 320, idealWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
             .disabled(model.paused)
+            .onAppear(perform:limitSelection)
+            .onChange(of:model.preferences.activeLayout) { _,_ in limitSelection() }
+    }
+    private func limitSelection() {
+        if model.selectedIDs.count > model.layout.windowPanes.count { model.selectedIDs = [target.id] }
     }
 }
 

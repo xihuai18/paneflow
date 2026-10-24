@@ -27,6 +27,38 @@ public indirect enum LayoutNode: Codable, Equatable, Sendable {
                           first: first.replacingRatio(id, with: value), second: second.replacingRatio(id, with: value))
         }
     }
+    public func movingLine(_ id: String, toPercent percent: Double) -> LayoutNode {
+        guard percent.isFinite,
+              let geometry = try? LayoutGeometry.make(self,in:CGRect(x:0,y:0,width:10000,height:10000),gap:0),
+              let target = geometry.seams.first(where:{$0.id == id}) else { return self }
+        let horizontal = target.axis == .horizontal
+        func coordinate(_ seam: LayoutSeam) -> Double { seam.axis == .horizontal ? seam.line.midX : seam.line.midY }
+        let firstIDs = Set(target.first.splitIDs), secondIDs = Set(target.second.splitIDs)
+        let before = geometry.seams.filter { $0.axis == target.axis && firstIDs.contains($0.id) }.map(coordinate).max()
+        let after = geometry.seams.filter { $0.axis == target.axis && secondIDs.contains($0.id) }.map(coordinate).min()
+        let lower = (before ?? (horizontal ? target.bounds.minX : target.bounds.minY))+100
+        let upper = (after ?? (horizontal ? target.bounds.maxX : target.bounds.maxY))-100
+        guard lower <= upper else { return self }
+        var positions = Dictionary(uniqueKeysWithValues:geometry.seams.map { ($0.id,coordinate($0)) })
+        positions[id] = min(upper,max(lower,percent*100))
+        func rebuild(_ node: LayoutNode, in area: CGRect) -> LayoutNode {
+            guard case let .split(key,axis,_,first,second) = node, let value = positions[key] else { return node }
+            let start = axis == .horizontal ? area.minX : area.minY
+            let length = axis == .horizontal ? area.width : area.height
+            let ratio = (value-start)/length
+            guard ratio > 0, ratio < 1 else { return node }
+            let a: CGRect, b: CGRect
+            if axis == .horizontal {
+                a = CGRect(x:area.minX,y:area.minY,width:value-area.minX,height:area.height)
+                b = CGRect(x:value,y:area.minY,width:area.maxX-value,height:area.height)
+            } else {
+                a = CGRect(x:area.minX,y:area.minY,width:area.width,height:value-area.minY)
+                b = CGRect(x:area.minX,y:value,width:area.width,height:area.maxY-value)
+            }
+            return .split(id:key,axis:axis,ratio:ratio,first:rebuild(first,in:a),second:rebuild(second,in:b))
+        }
+        return rebuild(self,in:CGRect(x:0,y:0,width:10000,height:10000))
+    }
     public func splittingPane(_ pane: String, axis: SplitAxis, ratio: Double = 0.5) -> LayoutNode {
         switch self {
         case .pane(let id):
@@ -70,12 +102,30 @@ public struct LayoutPreset: Codable, Identifiable, Equatable, Sendable {
     public var id: String
     public var name: String
     public var root: LayoutNode
-    public init(id: String = UUID().uuidString, name: String, root: LayoutNode) { self.id = id; self.name = name; self.root = root }
+    public var emptyPanes: Set<String>
+    public var windowPanes: [String] { root.panes.filter { !emptyPanes.contains($0) } }
+    public init(id: String = UUID().uuidString, name: String, root: LayoutNode, emptyPanes: Set<String> = []) {
+        self.id = id; self.name = name; self.root = root; self.emptyPanes = emptyPanes
+    }
+    private enum CodingKeys: String, CodingKey { case id, name, root, emptyPanes }
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy:CodingKeys.self)
+        id = try values.decode(String.self,forKey:.id); name = try values.decode(String.self,forKey:.name)
+        root = try values.decode(LayoutNode.self,forKey:.root)
+        emptyPanes = try values.decodeIfPresent(Set<String>.self,forKey:.emptyPanes) ?? []
+        try validate()
+    }
+    public func validate() throws {
+        try root.validate()
+        guard emptyPanes.isSubset(of:Set(root.panes)), !windowPanes.isEmpty else { throw LayoutError.invalid }
+    }
+    public static func snappedPercent(_ value: Double) -> Double { value.rounded() }
     public static let builtins: [LayoutPreset] = [
         .init(id: "halves", name: "左右均分", root: .split(id: "main", axis: .horizontal, ratio: 0.5, first: .pane("a"), second: .pane("b"))),
         .init(id: "stack", name: "上下分屏", root: .split(id: "main", axis: .vertical, ratio: 0.5, first: .pane("a"), second: .pane("b"))),
         .init(id: "wide", name: "左宽右窄", root: .split(id: "main", axis: .horizontal, ratio: 0.6, first: .pane("a"), second: .pane("b"))),
-        .init(id: "triple", name: "一大两小", root: .split(id: "main", axis: .horizontal, ratio: 0.6, first: .pane("a"), second: .split(id: "side", axis: .vertical, ratio: 0.5, first: .pane("b"), second: .pane("c"))))
+        .init(id: "triple", name: "一大两小", root: .split(id: "main", axis: .horizontal, ratio: 0.6, first: .pane("a"), second: .split(id: "side", axis: .vertical, ratio: 0.5, first: .pane("b"), second: .pane("c")))),
+        .init(id:"centered-two-thirds",name:"2/3 居中",root:.split(id:"left-line",axis:.horizontal,ratio:1.0/6,first:.pane("left-space"),second:.split(id:"right-line",axis:.horizontal,ratio:0.8,first:.pane("center"),second:.pane("right-space"))),emptyPanes:["left-space","right-space"])
     ]
 }
 

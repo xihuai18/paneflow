@@ -19,6 +19,30 @@ import PaneFlowCore
                 check("layout roundtrip", roundtrip == preset)
             }
         }
+        let centered = LayoutPreset.builtins.first { $0.id == "centered-two-thirds" }!
+        try centered.validate()
+        check("centered layout skips both empty sides", centered.windowPanes == ["center"] && centered.emptyPanes.count == 2)
+        let centerGeometry = try LayoutGeometry.make(centered.root,in:bounds,gap:0,scale:2)
+        let centerFrame = centerGeometry.panes["center"]!
+        check("two vertical lines leave a centered two-thirds window", abs(centerFrame.midX-bounds.midX)<0.5 && abs(centerFrame.width-bounds.width*2/3)<0.5)
+        check("blank areas do not create live divider handles", centerGeometry.links(assigned:Set(centered.windowPanes)).isEmpty)
+        check("line snapping supports one percent", abs(LayoutPreset.snappedPercent(45.6)-46)<1e-8)
+        let movedLine = centered.root.movingLine("left-line",toPercent:18)
+        let movedGeometry = try LayoutGeometry.make(movedLine,in:CGRect(x:0,y:0,width:10000,height:10000),gap:0)
+        check("moving one line keeps the other line fixed", movedGeometry.seams.first{$0.id == "left-line"}!.line.midX == 1800 && abs(movedGeometry.seams.first{$0.id == "right-line"}!.line.midX-8333)<1)
+        let limitedLine = centered.root.movingLine("left-line",toPercent:99)
+        let limitedGeometry = try LayoutGeometry.make(limitedLine,in:CGRect(x:0,y:0,width:10000,height:10000),gap:0)
+        check("lines cannot cross their neighbors", limitedGeometry.panes["center"]!.width >= 100)
+        let centeredCopy = try JSONDecoder().decode(LayoutPreset.self,from:JSONEncoder().encode(centered))
+        check("blank areas survive serialization", centeredCopy == centered)
+        var legacy = try JSONSerialization.jsonObject(with:JSONEncoder().encode(LayoutPreset.builtins[0])) as! [String:Any]
+        legacy["emptyPanes"] = nil
+        let decodedLegacy = try JSONDecoder().decode(LayoutPreset.self,from:JSONSerialization.data(withJSONObject:legacy))
+        check("old layouts default to no blank areas", decodedLegacy.emptyPanes.isEmpty)
+        do { try LayoutPreset(name:"empty",root:.pane("a"),emptyPanes:["a"]).validate(); check("all-empty layouts are rejected",false) }
+        catch { check("all-empty layouts are rejected",true) }
+        do { try LayoutPreset(name:"missing",root:.pane("a"),emptyPanes:["missing"]).validate(); check("unknown blank IDs are rejected",false) }
+        catch { check("unknown blank IDs are rejected",true) }
         let nested = LayoutNode.split(id: "outer", axis: .horizontal, ratio: 0.5,
                                       first: .split(id: "inner", axis: .horizontal, ratio: 0.9, first: .pane("a"), second: .pane("b")), second: .pane("c"))
         let minimums = ["a": CGSize(width:100,height:80), "b": CGSize(width:100,height:80), "c": CGSize(width:100,height:80)]

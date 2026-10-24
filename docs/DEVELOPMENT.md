@@ -52,7 +52,9 @@ build/PaneFlow.app/Contents/MacOS/PaneFlow --verify-layouts build/checks/layouts
 build/PaneFlow.app/Contents/MacOS/PaneFlow --preview-layouts
 ```
 
-检查列表切换、保存修改、另存为、还原选择，以及关闭或退出时的未保存提示。正式应用的这些入口复用同一个布局管理窗口。
+检查列表切换、保存修改、左侧复制、加横线/竖线、留白、还原选择，以及关闭或退出时的未保存提示。点中分隔线后检查位置输入和固定 1% 微调；移动一条线时其他线应保持位置。正式应用的这些入口复用同一个布局管理窗口。
+
+设置格式版本 2 保存各布局的留白区域 ID。版本 1 会按“没有留白”读取，并在首次升级时保留 `preferences.json.backup-before-blank-v2`。验证迁移时核对原布局 ID、名称和分隔结构不变，以及备份字节与原文件一致。留白必须从自动排列、点击放置和 Option 拖入目标中排除；原生检查覆盖单窗居中、双窗留白及其联动和撤销。
 
 界面渲染需要桌面会话，生成浅色/深色、已授权/未授权的面板、设置、布局管理页和联动分隔条 PNG：
 

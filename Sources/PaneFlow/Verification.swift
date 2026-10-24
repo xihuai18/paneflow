@@ -94,9 +94,28 @@ private struct HandlePreview: NSViewRepresentable {
         let blockedState = LayoutManagerState(model:blocked); blockedState.create()
         try require(!blockedState.save() && blocked.preferences.customLayouts.isEmpty && blockedState.isDirty && blockedState.error != nil,
                     "write failure preserves the dirty draft and does not change saved state",&results)
+        var blankLayout = LayoutPreset.builtins.first{$0.id == "centered-two-thirds"}!
+        blankLayout.id = "blank-fixture"
+        try require(model.saveLayout(blankLayout) && AppModel(storageURL:path).layout.emptyPanes == blankLayout.emptyPanes,"blank regions survive save and reload",&results)
+        let blankState = LayoutManagerState(model:model); blankState.duplicate()
+        try require(blankState.current.emptyPanes == blankLayout.emptyPanes,"copy preserves blank regions",&results)
+        var oldSettings = try JSONSerialization.jsonObject(with:Data(contentsOf:path)) as! [String:Any]
+        oldSettings["version"] = 1
+        oldSettings["customLayouts"] = (oldSettings["customLayouts"] as! [[String:Any]]).map { item -> [String:Any] in var item = item; item["emptyPanes"] = nil; return item }
+        let legacyPath = fixture.appendingPathComponent("legacy.json")
+        let legacyBytes = try JSONSerialization.data(withJSONObject:oldSettings)
+        try legacyBytes.write(to:legacyPath)
+        let migrated = AppModel(storageURL:legacyPath)
+        try require(migrated.preferences.version == 2 && migrated.preferences.customLayouts.allSatisfy{$0.emptyPanes.isEmpty},"old layouts retain all original window regions after migration",&results)
+        try require((try Data(contentsOf:legacyPath.appendingPathExtension("backup-before-blank-v2"))) == legacyBytes,"migration retains an exact backup of original settings",&results)
         let bytes = try Data(contentsOf:path)
         state.create(); state.discardAll()
         try require(state.dirtyIDs.isEmpty && (try Data(contentsOf:path)) == bytes,"discarding drafts does not modify saved settings",&results)
+    }
+    private static func blankPair() -> LayoutPreset {
+        let pair = LayoutNode.split(id:"pair-divider",axis:.horizontal,ratio:0.5,first:.pane("a"),second:.pane("b"))
+        let middle = LayoutNode.split(id:"top-line",axis:.vertical,ratio:0.1,first:.pane("top-space"),second:.split(id:"bottom-line",axis:.vertical,ratio:8.0/9,first:pair,second:.pane("bottom-space")))
+        return LayoutPreset(id:"blank-pair-fixture",name:"双窗留白",root:.split(id:"left-line",axis:.horizontal,ratio:0.1,first:.pane("left-space"),second:.split(id:"right-line",axis:.horizontal,ratio:8.0/9,first:middle,second:.pane("right-space"))),emptyPanes:["left-space","right-space","top-space","bottom-space"])
     }
     private static func interfaceChecks(delegate: AppDelegate, directory: URL, results: inout [[String:Any]]) async throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -134,6 +153,11 @@ private struct HandlePreview: NSViewRepresentable {
             manager.duplicate()
             try await capture(LayoutManagerView(state:manager),size:NSSize(width:880,height:620),name:"layouts-custom-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
             try await capture(LayoutManagerView(state:manager),size:NSSize(width:780,height:580),name:"layouts-compact-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
+            manager.selectedID = "centered-two-thirds"; manager.duplicate()
+            try await capture(LayoutManagerView(state:manager),size:NSSize(width:880,height:620),name:"layouts-blank-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
+            model.preferences.activeLayout = "centered-two-thirds"; model.selectedIDs = [sample.id]; model.linkStatus = "尚未建立联动布局"
+            try await capture(PaletteView(model:model,target:sample,close:{},edit:{}),size:NSSize(width:380,height:540),name:"palette-blank-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
+            model.preferences.activeLayout = LayoutPreset.builtins[3].id; model.selectedIDs = Set(samples.map(\.id))
             let handles = HStack(spacing:36) {
                 HandlePreview(axis:.horizontal).frame(width:18,height:64)
                 HandlePreview(axis:.vertical).frame(width:64,height:18)
@@ -211,6 +235,38 @@ private struct HandlePreview: NSViewRepresentable {
             if exerciseEnhanced {
                 try require(WindowAccess.value(application,"AXEnhancedUserInterface") as? Bool == true,"arrangement restores practice enhanced accessibility",&results)
             }
+            let fullLayoutFrames = await model.access.read(windows), fullDepth = model.undoCount
+            model.preferences.activeLayout = "centered-two-thirds"; model.selectedIDs = [windows[0].id]
+            model.arrangeSelected(); await Task.yield()
+            for _ in 0..<200 { if !model.busy && model.undoCount>fullDepth { break }; try await Task.sleep(for:.milliseconds(100)) }
+            guard let centerGroup = model.groups.first(where:{$0.preset.id == "centered-two-thirds"}) else { throw LayoutError.invalid }
+            let centerFrame = await model.access.read([windows[0]])
+            let target = try centerGroup.geometry().panes["center"]!
+            try require(Set(centerGroup.members.keys) == ["center"] && centerFrame[windows[0].id].map{FrameSettler.matches($0,target)} == true && abs(target.midX-centerGroup.bounds.midX)<1 && abs(target.width-centerGroup.bounds.width*2/3)<1,
+                        "automatic single-window arrangement skips both blank side regions",&results)
+            var blankPlacement: Bool?
+            model.place(windows[1],slot:"left-space",in:centerGroup) { blankPlacement = $0 }
+            try require(blankPlacement == false,"direct placement into a blank region is rejected",&results)
+            model.undo(); await Task.yield()
+            for _ in 0..<200 { if !model.busy && model.undoCount == fullDepth { break }; try await Task.sleep(for:.milliseconds(100)) }
+            let centerUndo = await model.access.read(windows)
+            try require(windows.allSatisfy { w in fullLayoutFrames[w.id].flatMap { f in centerUndo[w.id].map{FrameSettler.matches($0,f)} } == true },"centered placement undo restores the full layout",&results)
+            _ = model.saveLayout(blankPair()); model.selectedIDs = Set(windows.prefix(2).map(\.id))
+            model.arrangeSelected(); await Task.yield()
+            for _ in 0..<200 { if !model.busy && model.undoCount>fullDepth { break }; try await Task.sleep(for:.milliseconds(100)) }
+            guard let pairGroup = model.groups.first(where:{$0.preset.id == "blank-pair-fixture"}),
+                  let pairSeam = try pairGroup.geometry().seams.first(where:{$0.id == "pair-divider"}) else { throw LayoutError.invalid }
+            try require(Set(pairGroup.members.keys) == ["a","b"],"two-window arrangement skips all surrounding blank regions",&results)
+            helper.activate(options:.activateAllWindows)
+            for _ in 0..<15 { if NSWorkspace.shared.frontmostApplication?.processIdentifier == helper.processIdentifier { break }; try await Task.sleep(for:.milliseconds(100)) }
+            let pairResized = try await resizeThroughHandle(delegate,group:pairGroup,seam:pairSeam,to:pairSeam.bounds.minX+pairSeam.bounds.width*0.6,results:&results)
+            let pairActual = await model.access.read(pairGroup.windows)
+            try require(pairResized && pairGroup.windows.allSatisfy { w in pairActual[w.id].map { pairSeam.bounds.insetBy(dx:-2,dy:-2).contains($0) } == true },"linked resizing preserves surrounding blank space",&results)
+            for _ in 0..<2 {
+                let depth = model.undoCount; model.undo(); await Task.yield()
+                for _ in 0..<200 { if !model.busy && model.undoCount<depth { break }; try await Task.sleep(for:.milliseconds(100)) }
+            }
+            model.preferences.activeLayout = LayoutPreset.builtins[3].id
             guard var group = model.groups.first, let seam = try group.geometry().seams.first else { throw LayoutError.invalid }
             helper.activate(options:.activateAllWindows)
             for _ in 0..<15 {

@@ -3,7 +3,7 @@ import SwiftUI
 import PaneFlowCore
 
 struct Preferences: Codable {
-    var version = 1
+    var version = 2
     var activeLayout = "wide"
     var customLayouts: [LayoutPreset] = []
     var gap: Double = 0
@@ -39,7 +39,7 @@ struct WindowGroup {
     }
     func moves(minimums: [String: CGSize] = [:]) throws -> [WindowMove] {
         let geometry = try geometry(minimums: minimums)
-        return preset.root.panes.compactMap { slot in
+        return preset.windowPanes.compactMap { slot in
             guard let window = members[slot], let frame = geometry.panes[slot] else { return nil }
             return .init(window: window, frame: frame)
         }
@@ -77,11 +77,16 @@ struct UndoEntry { var frames: [WindowMove]; var groups: [WindowGroup] }
         storage = ephemeral ? nil : storageURL ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first?.appendingPathComponent("PaneFlow/preferences.json")
         guard let storage, FileManager.default.fileExists(atPath: storage.path) else { return }
         do {
-            let value = try JSONDecoder().decode(Preferences.self, from: Data(contentsOf: storage))
-            guard value.version == 1, value.customLayouts.count <= 100,
+            var value = try JSONDecoder().decode(Preferences.self, from: Data(contentsOf: storage))
+            guard (1...2).contains(value.version), value.customLayouts.count <= 100,
                   value.gap.isFinite, (0...40).contains(value.gap), value.margin.isFinite, (0...80).contains(value.margin),
                   Set(value.customLayouts.map(\.id)).count == value.customLayouts.count else { throw LayoutError.invalid }
-            for item in value.customLayouts { try item.root.validate(); guard !item.name.isEmpty, item.name.count <= 80 else { throw LayoutError.invalid } }
+            for item in value.customLayouts { try item.validate(); guard !item.name.isEmpty, item.name.count <= 80 else { throw LayoutError.invalid } }
+            if value.version == 1 {
+                let backup = storage.appendingPathExtension("backup-before-blank-v2")
+                if !FileManager.default.fileExists(atPath:backup.path) { try FileManager.default.copyItem(at:storage,to:backup) }
+                value.version = 2
+            }
             preferences = value
         } catch { canPersist = false; notice = "设置文件无法读取，已保留原文件。请在设置中备份并重置后保存。" }
     }
@@ -162,19 +167,19 @@ struct UndoEntry { var frames: [WindowMove]; var groups: [WindowGroup] }
     }
     func arrangeSelected(completion: ((Bool) -> Void)? = nil) {
         let selected = windows.filter { selectedIDs.contains($0.id) }
-        guard !selected.isEmpty, selected.count <= layout.root.panes.count, let first = selected.first, let desktop = desktop(for: first.frame) else {
-            notice = "请选择 1 到 \(layout.root.panes.count) 个窗口。"; completion?(false); return
+        guard !selected.isEmpty, selected.count <= layout.windowPanes.count, let first = selected.first, let desktop = desktop(for: first.frame) else {
+            notice = "请选择 1 到 \(layout.windowPanes.count) 个窗口。"; completion?(false); return
         }
         var group = makeGroup(layout: layout, desktop: desktop)
-        for (slot, window) in zip(layout.root.panes, selected) { group.members[slot] = window }
+        for (slot, window) in zip(layout.windowPanes, selected) { group.members[slot] = window }
         do {
             let next = without(Set(selected.map(\.id)), from: groups) + [group]
             let moves = try group.moves()
-            Task { let success = await commit(moves, groups: next, success: "已排列并建立联动，可拖动窗口之间的分隔条。"); completion?(success) }
+            Task { let success = await commit(moves, groups: next, success: selected.count > 1 ? "已排列窗口，留白区域保持空置。相邻窗口可联动调整。" : "窗口已放入指定区域。"); completion?(success) }
         } catch { notice = error.localizedDescription; completion?(false) }
     }
     func place(_ window: LiveWindow, slot: String, in destination: WindowGroup, baseline: [WindowMove] = [], completion: ((Bool) -> Void)? = nil) {
-        guard destination.preset.root.panes.contains(slot) else { completion?(false); return }
+        guard destination.preset.windowPanes.contains(slot) else { completion?(false); return }
         var target = destination
         let source = group(containing: window)
         let placement = SlotPlacement.placing(window.id, in: slot, assignments: target.members.mapValues(\.id))
@@ -237,7 +242,7 @@ struct UndoEntry { var frames: [WindowMove]; var groups: [WindowGroup] }
         do {
             var value = value
             value.name = value.name.trimmingCharacters(in:.whitespacesAndNewlines)
-            try value.root.validate()
+            try value.validate()
             guard !value.name.isEmpty, value.name.count <= 80,
                   !LayoutPreset.builtins.contains(where: { $0.id == value.id }) else { throw LayoutError.invalid }
             var next = preferences
