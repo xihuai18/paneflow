@@ -197,6 +197,9 @@ private struct HandlePreview: NSViewRepresentable {
             multiManager.duplicate()
             for display in previewDisplays { multiManager.setScreen(id:display.id,name:display.name,enabled:true) }
             try await capture(LayoutManagerView(state:multiManager),size:NSSize(width:880,height:660),name:"layouts-multiscreen-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
+            let third = Desktop(id:"preview-c",name:"显示器 C",frame:CGRect(x:100,y:1000,width:1400,height:900),visible:CGRect(x:100,y:1030,width:1400,height:870),scale:2)
+            multiManager.displays.append(third); multiManager.setScreen(id:third.id,name:third.name,enabled:true)
+            try await capture(LayoutManagerView(state:multiManager),size:NSSize(width:780,height:580),name:"layouts-overview-three-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
             if Desktop.all.count >= 2 {
                 let configs = Desktop.all.prefix(2).enumerated().map { index,display in ScreenLayout(id:display.id,name:"显示器 \(index+1)",root:LayoutPreset.builtins[index].root) }
                 let multiPreview = LayoutPreset(id:"multi-interface",name:"双屏工作",root:.pane("a"),screens:configs)

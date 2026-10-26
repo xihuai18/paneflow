@@ -138,6 +138,12 @@ import PaneFlowCore
         var rejectedScreen = false
         do { try duplicateScreen.validate() } catch { rejectedScreen = true }
         check("duplicated display assignments are rejected",rejectedScreen)
+        let monitors = [CGRect(x:-1600,y:0,width:1600,height:1000),CGRect(x:0,y:-300,width:900,height:1440),CGRect(x:0,y:1140,width:900,height:600)]
+        let overviewBounds = CGRect(x:0,y:0,width:620,height:300)
+        let fitted = DisplayGeometry.fittedFrames(monitors,in:overviewBounds)
+        check("overview fits all negative-origin and portrait displays",fitted.count == 3 && fitted.allSatisfy{overviewBounds.contains($0)})
+        check("overview preserves relative monitor positions",fitted[0].maxX <= fitted[1].minX+0.001 && fitted[1].maxY <= fitted[2].minY+0.001)
+        check("overview uses the same scale for all displays",abs(fitted[0].width/monitors[0].width-fitted[1].height/monitors[1].height)<0.000001)
         print("PASS: \(passed) core checks")
     }
 }

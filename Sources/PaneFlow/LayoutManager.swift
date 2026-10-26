@@ -25,10 +25,6 @@ import PaneFlowCore
     var hasSavedVersion: Bool { model.preferences.customLayouts.contains { $0.id == selectedID } }
     var editingScreenID: String { current.screens.first(where:{$0.id == screenID})?.id ?? current.screens.first?.id ?? "" }
     var partition: LayoutPreset { current.onScreen(editingScreenID) ?? current }
-    var editorAspect: Double {
-        guard let display = displays.first(where:{$0.id == editingScreenID}) else { return 1.8 }
-        return display.visible.width/display.visible.height
-    }
     func updatePartition(_ value: LayoutPreset) {
         guard !isBuiltin else { return }
         var next = current
@@ -199,10 +195,63 @@ struct LayoutManagerView: View {
     }
 }
 
+private struct MultiScreenLayoutCanvas: View {
+    let screens: [ScreenLayout]
+    let displays: [Desktop]
+    let activeID: String
+    let selected: String?
+    let selectedLine: String
+    let choose: (String,String) -> Void
+    let moveLine: (String,String,Double) -> Void
+    let selectLine: (String,String) -> Void
+    let activate: (String) -> Void
+    private var displayFrames: [CGRect] {
+        let connected = screens.compactMap { screen in displays.first{$0.id == screen.id}?.frame }
+        var right = connected.map(\.maxX).max() ?? 0
+        return screens.map { screen in
+            if let display = displays.first(where:{$0.id == screen.id}) { return display.frame }
+            let frame = CGRect(x:right+80,y:0,width:1600,height:1000)
+            right = frame.maxX; return frame
+        }
+    }
+    var body: some View {
+        GeometryReader { proxy in
+            let frames = DisplayGeometry.fittedFrames(displayFrames,in:CGRect(origin:.zero,size:proxy.size))
+            ZStack(alignment:.topLeading) {
+                ForEach(Array(screens.enumerated()),id:\.element.id) { index,screen in
+                    if frames.indices.contains(index) { screenView(screen,in:frames[index]) }
+                }
+            }
+        }
+    }
+    private func screenView(_ screen: ScreenLayout, in frame: CGRect) -> some View {
+        let active = activeID == screen.id
+        let connected = displays.contains{$0.id == screen.id}
+        return VStack(spacing:5) {
+            Button { activate(screen.id) } label: {
+                HStack(spacing:4) {
+                    Image(systemName:"display").font(.system(size:10))
+                    Text(screen.name).font(.system(size:11,weight:active ? .semibold : .regular)).lineLimit(1).truncationMode(.middle)
+                    if !connected { Text("未连接").font(.caption2).foregroundStyle(.secondary) }
+                    Spacer(minLength:0)
+                }.contentShape(Rectangle())
+            }.buttonStyle(.plain).help("编辑“\(screen.name)”的分区")
+            LayoutCanvas(root:screen.root,emptyPanes:screen.emptyPanes,selected:active ? selected : nil,editing:true,selectedLine:active ? selectedLine : nil,
+                         choose:{choose(screen.id,$0)},moveLine:{moveLine(screen.id,$0,$1)},selectLine:{selectLine(screen.id,$0)})
+        }.padding(7)
+            .frame(width:max(1,frame.width-10),height:max(1,frame.height-10))
+            .background(Color(nsColor:.controlBackgroundColor).opacity(0.3),in:RoundedRectangle(cornerRadius:9))
+            .overlay(RoundedRectangle(cornerRadius:9).strokeBorder(active ? Color.accentColor : Color(nsColor:.separatorColor),lineWidth:active ? 1.5 : 1))
+            .accessibilityElement(children:.contain).accessibilityLabel(screen.name)
+            .position(x:frame.midX,y:frame.midY)
+    }
+}
+
 private struct LayoutDetailsView: View {
     @ObservedObject var state: LayoutManagerState
     @State private var selected: String?
     @State private var seamID = ""
+    @State private var selectedScreenID = ""
     private var draft: Binding<LayoutPreset> {
         Binding(get:{state.current},set:{ if !state.isBuiltin { state.drafts[state.selectedID] = $0 } })
     }
@@ -214,7 +263,7 @@ private struct LayoutDetailsView: View {
         return (seam.axis == .horizontal ? seam.line.midX : seam.line.midY)/100
     }
     var body: some View {
-        VStack(alignment:.leading,spacing:14) {
+        VStack(alignment:.leading,spacing:12) {
             if state.isBuiltin { Text(state.current.name).font(.title3); Text("内置布局保持不变。复制一份即可自由编辑。").font(.callout).foregroundStyle(.secondary) }
             else {
                 HStack {
@@ -223,9 +272,7 @@ private struct LayoutDetailsView: View {
                 }
             }
             if !state.isBuiltin { screenControls }
-            LayoutCanvas(root:state.partition.root,emptyPanes:state.partition.emptyPanes,selected:selected,editing:true,selectedLine:seamID,choose:{selected=$0},moveLine:state.isBuiltin ? nil : { key,percent in
-                partition.wrappedValue.root = state.partition.root.movingLine(key,toPercent:percent); seamID = key
-            },selectLine:{seamID=$0}).aspectRatio(state.editorAspect,contentMode:.fit).frame(height:260).frame(maxWidth:.infinity)
+            layoutEditor.frame(minHeight:180,idealHeight:300,maxHeight:.infinity).layoutPriority(1)
             if !state.isBuiltin {
                 HStack {
                     Button("加竖线") { split(.horizontal) }.disabled(state.partition.root.panes.count>=16)
@@ -241,17 +288,17 @@ private struct LayoutDetailsView: View {
                         value.emptyPanes.formIntersection(Set(value.root.panes)); partition.wrappedValue = value; resetSelection()
                     }.disabled(state.partition.root.panes.count<=1 || (!selectedIsEmpty && state.partition.windowPanes.count<=1)).help("选择要合并掉的区域，将空间交给相邻区域")
                 }
-                if let seam = seams.first(where:{$0.id == seamID}) {
-                    HStack {
+                HStack {
+                    if let seam = seams.first(where:{$0.id == seamID}) {
                         Text(seam.axis == .horizontal ? "竖线位置" : "横线位置")
                         TextField("百分比",value:Binding(get:{position},set:changePosition),format:.number.precision(.fractionLength(0...2))).frame(width:65).textFieldStyle(.roundedBorder)
                         Text("%")
                         Stepper("线的位置",onIncrement:{changePosition(position+1)},onDecrement:{changePosition(position-1)}).labelsHidden().help("每次调整 1%")
+                    } else {
+                        Text(state.current.screens.isEmpty ? "留白处不放窗口 · 拖线微调 1%" : "点击任意屏幕的区域编辑 · 拖线微调 1%").font(.caption).foregroundStyle(.secondary)
                     }
-                }
-                Text("留白处不放窗口 · 拖线微调 1%").font(.caption).foregroundStyle(.secondary)
+                }.frame(height:22,alignment:.leading)
             }
-            Spacer(minLength:0)
             if let error = state.error { Text(error).foregroundStyle(.red).font(.callout).fixedSize(horizontal:false,vertical:true) }
             else { Text("保存后，下次排列窗口时生效。").font(.caption).foregroundStyle(.secondary) }
             Divider()
@@ -269,11 +316,23 @@ private struct LayoutDetailsView: View {
         }.padding(24).background(Color(nsColor:.windowBackgroundColor))
             .onAppear(perform:resetSelection)
             .onChange(of:state.selectedID) { _,_ in state.screenID = ""; resetSelection() }
-            .onChange(of:state.editingScreenID) { _,_ in resetSelection() }
+            .onChange(of:state.editingScreenID) { _,id in if selectedScreenID != id { resetSelection() } }
             .onChange(of:state.partition.root) { _,root in
                 if selected.map({root.panes.contains($0)}) != true { selected = root.panes.first }
                 if !seamID.isEmpty, !root.splitIDs.contains(seamID) { seamID = "" }
             }
+    }
+    @ViewBuilder private var layoutEditor: some View {
+        if state.current.screens.isEmpty {
+            LayoutCanvas(root:state.partition.root,emptyPanes:state.partition.emptyPanes,selected:selected,editing:true,selectedLine:seamID,choose:{selected=$0},moveLine:state.isBuiltin ? nil : { key,percent in
+                partition.wrappedValue.root = state.partition.root.movingLine(key,toPercent:percent); seamID = key
+            },selectLine:{seamID=$0}).aspectRatio(1.8,contentMode:.fit).frame(maxWidth:.infinity,maxHeight:.infinity)
+        } else {
+            MultiScreenLayoutCanvas(screens:state.current.screens,displays:state.displays,activeID:state.editingScreenID,selected:selected,selectedLine:seamID,
+                choose:{screen,pane in activateScreen(screen); selected = pane; seamID = ""},
+                moveLine:{screen,line,percent in activateScreen(screen); changePosition(line:line,percent:percent)},
+                selectLine:{screen,line in activateScreen(screen); seamID = line},activate:activateScreen)
+        }
     }
     private var screenControls: some View {
         HStack {
@@ -287,14 +346,16 @@ private struct LayoutDetailsView: View {
                     Toggle("\(screen.name)（未连接）",isOn:Binding(get:{true},set:{state.setScreen(id:screen.id,name:screen.name,enabled:$0)}))
                 }
             } label: { Label(state.current.screens.isEmpty ? "显示器：当前屏幕" : "显示器：\(state.current.screens.count) 块",systemImage:"display.2") }
-            if !state.current.screens.isEmpty {
-                Picker("编辑",selection:Binding(get:{state.editingScreenID},set:{state.screenID = $0})) {
-                    ForEach(state.current.screens) { screen in Text(screen.name).tag(screen.id) }
-                }.pickerStyle(.menu)
-            }
         }.controlSize(.small)
     }
-    private func resetSelection() { selected = state.partition.root.panes.first; seamID = "" }
+    private func activateScreen(_ id: String) {
+        guard state.editingScreenID != id else { return }
+        state.screenID = id; resetSelection()
+    }
+    private func resetSelection() { selectedScreenID = state.editingScreenID; selected = state.partition.root.panes.first; seamID = "" }
+    private func changePosition(line: String, percent: Double) {
+        partition.wrappedValue.root = state.partition.root.movingLine(line,toPercent:percent); seamID = line
+    }
     private func changePosition(_ percent: Double) {
         guard percent.isFinite else { return }
         partition.wrappedValue.root = state.partition.root.movingLine(seamID,toPercent:percent)

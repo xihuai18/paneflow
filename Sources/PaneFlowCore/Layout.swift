@@ -220,6 +220,16 @@ public enum LayoutError: Error, LocalizedError {
 }
 
 public enum DisplayGeometry {
+    public static func fittedFrames(_ frames: [CGRect], in bounds: CGRect) -> [CGRect] {
+        let source = frames.reduce(CGRect.null) { $0.union($1) }
+        let available = bounds.insetBy(dx:8,dy:8)
+        guard !frames.isEmpty, source.width > 0, source.height > 0, available.width > 0, available.height > 0 else { return [] }
+        let scale = min(available.width/source.width,available.height/source.height)
+        let origin = CGPoint(x:available.midX-source.width*scale/2,y:available.midY-source.height*scale/2)
+        return frames.map { frame in
+            CGRect(x:origin.x+(frame.minX-source.minX)*scale,y:origin.y+(frame.minY-source.minY)*scale,width:frame.width*scale,height:frame.height*scale)
+        }
+    }
     public static func flip(_ frame: CGRect, primaryHeight: Double) -> CGRect {
         CGRect(x: frame.minX, y: primaryHeight - frame.maxY, width: frame.width, height: frame.height)
     }
