@@ -98,26 +98,52 @@ public indirect enum LayoutNode: Codable, Equatable, Sendable {
     }
 }
 
-public struct LayoutPreset: Codable, Identifiable, Equatable, Sendable {
+public struct ScreenLayout: Codable, Identifiable, Equatable, Sendable {
     public var id: String
     public var name: String
     public var root: LayoutNode
     public var emptyPanes: Set<String>
     public var windowPanes: [String] { root.panes.filter { !emptyPanes.contains($0) } }
-    public init(id: String = UUID().uuidString, name: String, root: LayoutNode, emptyPanes: Set<String> = []) {
+    public init(id: String, name: String, root: LayoutNode, emptyPanes: Set<String> = []) {
         self.id = id; self.name = name; self.root = root; self.emptyPanes = emptyPanes
     }
-    private enum CodingKeys: String, CodingKey { case id, name, root, emptyPanes }
+    public func validate() throws {
+        try root.validate()
+        guard !id.isEmpty, id.count < 128, !name.isEmpty, name.count <= 80,
+              emptyPanes.isSubset(of:Set(root.panes)), !windowPanes.isEmpty else { throw LayoutError.invalid }
+    }
+}
+
+public struct LayoutPreset: Codable, Identifiable, Equatable, Sendable {
+    public var id: String
+    public var name: String
+    public var root: LayoutNode
+    public var emptyPanes: Set<String>
+    public var screens: [ScreenLayout]
+    public var windowPanes: [String] { root.panes.filter { !emptyPanes.contains($0) } }
+    public var windowCount: Int { screens.isEmpty ? windowPanes.count : screens.reduce(0) { $0 + $1.windowPanes.count } }
+    public init(id: String = UUID().uuidString, name: String, root: LayoutNode, emptyPanes: Set<String> = [], screens: [ScreenLayout] = []) {
+        self.id = id; self.name = name; self.root = root; self.emptyPanes = emptyPanes; self.screens = screens
+    }
+    public func onScreen(_ id: String) -> LayoutPreset? {
+        guard !screens.isEmpty else { return self }
+        guard let screen = screens.first(where:{$0.id == id}) else { return nil }
+        return LayoutPreset(id:self.id,name:name,root:screen.root,emptyPanes:screen.emptyPanes)
+    }
+    private enum CodingKeys: String, CodingKey { case id, name, root, emptyPanes, screens }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy:CodingKeys.self)
         id = try values.decode(String.self,forKey:.id); name = try values.decode(String.self,forKey:.name)
         root = try values.decode(LayoutNode.self,forKey:.root)
         emptyPanes = try values.decodeIfPresent(Set<String>.self,forKey:.emptyPanes) ?? []
+        screens = try values.decodeIfPresent([ScreenLayout].self,forKey:.screens) ?? []
         try validate()
     }
     public func validate() throws {
         try root.validate()
         guard emptyPanes.isSubset(of:Set(root.panes)), !windowPanes.isEmpty else { throw LayoutError.invalid }
+        guard Set(screens.map(\.id)).count == screens.count else { throw LayoutError.invalid }
+        for screen in screens { try screen.validate() }
     }
     public static func snappedPercent(_ value: Double) -> Double { value.rounded() }
     public static let builtins: [LayoutPreset] = [

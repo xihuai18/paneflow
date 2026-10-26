@@ -129,15 +129,15 @@ private struct MouseGesture {
                 if live.kind == "move" {
                     if latestFlags.contains(.option), model.preferences.zonesEnabled {
                         model.access.cancelPreviews()
-                        if let desktop = Desktop.all.first(where: { $0.frame.contains(latestPoint) }) {
-                            let target = model.groups.last(where: { $0.screenID == desktop.id && $0.preset.id == model.layout.id && $0.preset.root == model.layout.root && $0.preset.emptyPanes == model.layout.emptyPanes }) ?? model.makeGroup(layout: model.layout, desktop: desktop)
+                        live.drop = nil; live.magnet = nil
+                        if let target = model.dropDestination(at:latestPoint) {
                             if let geometry = try? target.geometry() {
                                 let slot = geometry.panes.first(where: { target.preset.windowPanes.contains($0.key) && $0.value.contains(latestPoint) })?.key
                                 live.drop = slot.map { (target, $0) }; live.magnet = nil
                                 var preview = geometry; preview.panes = preview.panes.filter { target.preset.windowPanes.contains($0.key) }
                                 overlays.showZones(preview, bounds: target.bounds, selected: slot)
-                            }
-                        }
+                            } else { overlays.hidePreview() }
+                        } else { overlays.hidePreview() }
                     } else {
                         live.drop = nil; overlays.hidePreview()
                         if model.preferences.magnetEnabled && !latestFlags.contains(.control) {

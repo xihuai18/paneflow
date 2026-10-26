@@ -324,7 +324,7 @@ final class WindowAccess: @unchecked Sendable {
     }
     private func perform(_ moves: [WindowMove], baseline: [WindowMove]) -> AccessReport {
         guard Self.trusted else { return .init(succeeded: false, message: "请先在系统设置中允许“窗合”的辅助功能权限。", rollbackFailed:Set(baseline.map { $0.window.id })) }
-        guard !moves.isEmpty, moves.count <= 16, Set(moves.map { $0.window.id }).count == moves.count else { return preflightFailure("窗口选择无效，请刷新后重试。",baseline:baseline) }
+        guard !moves.isEmpty, Set(moves.map { $0.window.id }).count == moves.count else { return preflightFailure("窗口选择无效，请刷新后重试。",baseline:baseline) }
         var originals: [WindowMove] = []
         for move in moves {
             guard Self.eligible(move.window.element), let frame = Self.frame(move.window.element), FrameSettler.matches(move.frame, move.frame) else { return preflightFailure("窗口已关闭或不能调整。",baseline:baseline) }

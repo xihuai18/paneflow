@@ -124,6 +124,20 @@ import PaneFlowCore
         check("cancelled driver stops", !cancelled.reachedTarget && cancelClock<0.3)
         let flipped = DisplayGeometry.flip(bounds,primaryHeight:900)
         check("display transform roundtrip", DisplayGeometry.flip(flipped,primaryHeight:900) == bounds)
+        let multi = LayoutPreset(id:"multi",name:"双屏",root:.pane("unused"),screens:[
+            .init(id:"screen-a",name:"显示器 A",root:LayoutPreset.builtins[0].root),
+            .init(id:"screen-b",name:"显示器 B",root:centered.root,emptyPanes:centered.emptyPanes)
+        ])
+        try multi.validate()
+        check("multi-screen capacity skips each screen's blank regions",multi.windowCount == 3)
+        check("screen selection excludes every other display",multi.onScreen("screen-c") == nil)
+        check("screen resolution retains independent partition geometry",multi.onScreen("screen-b")?.root == centered.root && multi.onScreen("screen-b")?.emptyPanes == centered.emptyPanes)
+        let decodedMulti = try JSONDecoder().decode(LayoutPreset.self,from:JSONEncoder().encode(multi))
+        check("screen layouts survive serialization",decodedMulti == multi)
+        var duplicateScreen = multi; duplicateScreen.screens.append(multi.screens[0])
+        var rejectedScreen = false
+        do { try duplicateScreen.validate() } catch { rejectedScreen = true }
+        check("duplicated display assignments are rejected",rejectedScreen)
         print("PASS: \(passed) core checks")
     }
 }

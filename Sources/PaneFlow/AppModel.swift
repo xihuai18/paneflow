@@ -1,9 +1,10 @@
 import AppKit
 import SwiftUI
 import PaneFlowCore
+import ColorSync
 
 struct Preferences: Codable {
-    var version = 2
+    var version = 3
     var activeLayout = "wide"
     var customLayouts: [LayoutPreset] = []
     var gap: Double = 0
@@ -21,8 +22,13 @@ struct Desktop: Identifiable {
     var scale: Double
     @MainActor static var all: [Desktop] {
         let primary = NSScreen.screens.first?.frame.height ?? 0
-        return NSScreen.screens.map { .init(id: String(($0.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0), name: $0.localizedName,
-                                          frame: DisplayGeometry.flip($0.frame, primaryHeight: primary), visible: DisplayGeometry.flip($0.visibleFrame, primaryHeight: primary), scale: $0.backingScaleFactor) }
+        return NSScreen.screens.map { screen in
+            let number = (screen.deviceDescription[NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber)?.uint32Value ?? 0
+            let uuid = CGDisplayCreateUUIDFromDisplayID(number)?.takeRetainedValue()
+            let id = uuid.map { CFUUIDCreateString(nil,$0) as String } ?? "display-\(number)"
+            return .init(id:id,name:screen.localizedName,frame:DisplayGeometry.flip(screen.frame,primaryHeight:primary),
+                         visible:DisplayGeometry.flip(screen.visibleFrame,primaryHeight:primary),scale:screen.backingScaleFactor)
+        }
     }
 }
 struct WindowGroup {
@@ -78,14 +84,14 @@ struct UndoEntry { var frames: [WindowMove]; var groups: [WindowGroup] }
         guard let storage, FileManager.default.fileExists(atPath: storage.path) else { return }
         do {
             var value = try JSONDecoder().decode(Preferences.self, from: Data(contentsOf: storage))
-            guard (1...2).contains(value.version), value.customLayouts.count <= 100,
+            guard (1...3).contains(value.version), value.customLayouts.count <= 100,
                   value.gap.isFinite, (0...40).contains(value.gap), value.margin.isFinite, (0...80).contains(value.margin),
                   Set(value.customLayouts.map(\.id)).count == value.customLayouts.count else { throw LayoutError.invalid }
             for item in value.customLayouts { try item.validate(); guard !item.name.isEmpty, item.name.count <= 80 else { throw LayoutError.invalid } }
-            if value.version == 1 {
-                let backup = storage.appendingPathExtension("backup-before-blank-v2")
+            if value.version < 3 {
+                let backup = storage.appendingPathExtension("backup-before-multiscreen-v3")
                 if !FileManager.default.fileExists(atPath:backup.path) { try FileManager.default.copyItem(at:storage,to:backup) }
-                value.version = 2
+                value.version = 3
             }
             preferences = value
         } catch { canPersist = false; notice = "设置文件无法读取，已保留原文件。请在设置中备份并重置后保存。" }
@@ -155,6 +161,32 @@ struct UndoEntry { var frames: [WindowMove]; var groups: [WindowGroup] }
         .init(preset: layout, bounds: desktop.visible.insetBy(dx: preferences.margin, dy: preferences.margin), screenID: desktop.id,
               scale: desktop.scale, gap: preferences.gap, members: [:])
     }
+    func layoutGroups(_ preset: LayoutPreset, on desktops: [Desktop], fallback: Desktop?, reusingExisting: Bool = false) throws -> [WindowGroup] {
+        let targets: [Desktop]
+        if preset.screens.isEmpty {
+            guard let fallback else { throw LayoutError.invalid }
+            targets = [fallback]
+        } else {
+            targets = try preset.screens.map { config in
+                guard let screen = desktops.first(where:{$0.id == config.id}) else {
+                    throw NSError(domain:"PaneFlowDisplay",code:1,userInfo:[NSLocalizedDescriptionKey:"“\(config.name)”未连接，请连接它或在布局管理中取消选择。"])
+                }
+                return screen
+            }
+        }
+        return targets.compactMap { screen in
+            guard let value = preset.onScreen(screen.id) else { return nil }
+            if reusingExisting, let group = groups.last(where:{$0.screenID == screen.id && $0.preset.id == value.id && $0.preset.root == value.root && $0.preset.emptyPanes == value.emptyPanes}) { return group }
+            return makeGroup(layout:value,desktop:screen)
+        }
+    }
+    func destinations(for frame: CGRect) throws -> [WindowGroup] {
+        try layoutGroups(layout,on:Desktop.all,fallback:desktop(for:frame),reusingExisting:true)
+    }
+    func dropDestination(at point: CGPoint) -> WindowGroup? {
+        guard let screen = Desktop.all.first(where:{$0.frame.contains(point)}), let value = layout.onScreen(screen.id) else { return nil }
+        return groups.last(where:{$0.screenID == screen.id && $0.preset.id == value.id && $0.preset.root == value.root && $0.preset.emptyPanes == value.emptyPanes}) ?? makeGroup(layout:value,desktop:screen)
+    }
     func group(containing window: LiveWindow) -> WindowGroup? { groups.first { $0.windows.contains(where: { $0.id == window.id }) } }
     func leafMinimums(_ group: WindowGroup) -> [String: CGSize] {
         Dictionary(uniqueKeysWithValues: group.members.map { ($0.key, minimums[$0.value.id] ?? CGSize(width: 64, height: 64)) })
@@ -167,15 +199,22 @@ struct UndoEntry { var frames: [WindowMove]; var groups: [WindowGroup] }
     }
     func arrangeSelected(completion: ((Bool) -> Void)? = nil) {
         let selected = windows.filter { selectedIDs.contains($0.id) }
-        guard !selected.isEmpty, selected.count <= layout.windowPanes.count, let first = selected.first, let desktop = desktop(for: first.frame) else {
-            notice = "请选择 1 到 \(layout.windowPanes.count) 个窗口。"; completion?(false); return
+        guard !selected.isEmpty, selected.count <= layout.windowCount, let first = selected.first else {
+            notice = "请选择 1 到 \(layout.windowCount) 个窗口。"; completion?(false); return
         }
-        var group = makeGroup(layout: layout, desktop: desktop)
-        for (slot, window) in zip(layout.windowPanes, selected) { group.members[slot] = window }
         do {
-            let next = without(Set(selected.map(\.id)), from: groups) + [group]
-            let moves = try group.moves()
-            Task { let success = await commit(moves, groups: next, success: selected.count > 1 ? "已排列窗口，留白区域保持空置。相邻窗口可联动调整。" : "窗口已放入指定区域。"); completion?(success) }
+            var targets = try layoutGroups(layout,on:Desktop.all,fallback:desktop(for:first.frame))
+            var index = 0
+            for i in targets.indices {
+                for slot in targets[i].preset.windowPanes where index < selected.count {
+                    targets[i].members[slot] = selected[index]; index += 1
+                }
+            }
+            targets = targets.filter { !$0.members.isEmpty }
+            let next = without(Set(selected.map(\.id)), from:groups) + targets
+            let moves = try targets.flatMap { try $0.moves() }
+            let message = targets.count > 1 ? "已在 \(targets.count) 块显示器排列窗口，可一次撤销。" : (selected.count > 1 ? "已排列窗口，留白区域保持空置。相邻窗口可联动调整。" : "窗口已放入指定区域。")
+            Task { let success = await commit(moves,groups:next,success:message); completion?(success) }
         } catch { notice = error.localizedDescription; completion?(false) }
     }
     func place(_ window: LiveWindow, slot: String, in destination: WindowGroup, baseline: [WindowMove] = [], completion: ((Bool) -> Void)? = nil) {

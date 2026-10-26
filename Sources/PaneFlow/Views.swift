@@ -125,10 +125,10 @@ struct PaletteView: View {
     let target: LiveWindow
     let close: () -> Void
     let edit: () -> Void
-    var destination: WindowGroup? {
-        guard let desktop = model.desktop(for: target.frame) else { return nil }
-        return model.groups.last { $0.screenID == desktop.id && $0.preset.id == model.layout.id && $0.preset.root == model.layout.root && $0.preset.emptyPanes == model.layout.emptyPanes }
-            ?? model.makeGroup(layout: model.layout, desktop: desktop)
+    private var destinationResult: Result<[WindowGroup],Error> { Result { try model.destinations(for:target.frame) } }
+    private var destinationError: String? {
+        if case .failure(let error) = destinationResult { return error.localizedDescription }
+        return nil
     }
     var body: some View {
         VStack(spacing: 0) {
@@ -156,29 +156,27 @@ struct PaletteView: View {
                     }.controlSize(.small)
                     Text("点击分区放置当前窗口，已有窗口时交换位置。")
                         .font(.system(size:11)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
-                    LayoutCanvas(root: model.layout.root, emptyPanes:model.layout.emptyPanes, names: destination?.members.mapValues { $0.app.name } ?? [:], details:destination?.members.mapValues { $0.title } ?? [:]) { slot in
-                        if let destination { model.place(target, slot: slot, in: destination) { success in if success { close() } } }
-                    }.frame(height: 108).disabled(model.busy || !model.trusted)
+                    layoutPreviews.disabled(model.busy || !model.trusted)
                     Divider()
                     HStack {
                         Text("排列多个窗口").font(.system(size:12,weight:.semibold))
                         Spacer()
-                        Text("\(model.selectedIDs.count)/\(model.layout.windowPanes.count)").font(.caption).foregroundStyle(.secondary)
+                        Text("\(model.selectedIDs.count)/\(model.layout.windowCount)").font(.caption).foregroundStyle(.secondary)
                         Button("刷新") { Task { await model.refresh(focused: target) } }.controlSize(.small)
                     }
-                    Text("最多勾选 \(model.layout.windowPanes.count) 个窗口，留白区域会自动跳过。")
+                    Text(model.layout.screens.isEmpty ? "最多勾选 \(model.layout.windowCount) 个窗口，留白区域会自动跳过。" : "按显示器顺序填入区域，最多 \(model.layout.windowCount) 个窗口。")
                         .font(.system(size:11)).foregroundStyle(.secondary)
                     List {
                         ForEach(model.windows) { window in
                             Toggle(isOn: Binding(get: { model.selectedIDs.contains(window.id) }, set: { enabled in
                                 if enabled {
-                                    if model.layout.windowPanes.count == 1 { model.selectedIDs = [window.id] }
-                                    else if model.selectedIDs.count < model.layout.windowPanes.count { model.selectedIDs.insert(window.id) }
+                                    if model.layout.windowCount == 1 { model.selectedIDs = [window.id] }
+                                    else if model.selectedIDs.count < model.layout.windowCount { model.selectedIDs.insert(window.id) }
                                 } else { model.selectedIDs.remove(window.id) }
                             })) {
                                 Text(window.label).font(.system(size: 12)).lineLimit(1).truncationMode(.middle).help(window.label)
                             }.toggleStyle(.checkbox)
-                                .disabled(model.layout.windowPanes.count > 1 && model.selectedIDs.count >= model.layout.windowPanes.count && !model.selectedIDs.contains(window.id))
+                                .disabled(model.layout.windowCount > 1 && model.selectedIDs.count >= model.layout.windowCount && !model.selectedIDs.contains(window.id))
                         }
                         if model.windows.isEmpty { Text("没有找到可调整的窗口，请先打开一个普通窗口。").font(.caption).foregroundStyle(.secondary) }
                     }.listStyle(.inset).scrollContentBackground(.hidden).frame(minHeight:100,maxHeight:.infinity)
@@ -189,7 +187,7 @@ struct PaletteView: View {
                     Button(model.busy ? "正在调整…" : (model.selectedIDs.count > 1 ? "排列并联动" : "放置所选窗口")) {
                         model.arrangeSelected { success in if success { close() } }
                     }
-                        .buttonStyle(.borderedProminent).disabled(model.busy || !model.trusted || model.selectedIDs.isEmpty || model.selectedIDs.count > model.layout.windowPanes.count)
+                        .buttonStyle(.borderedProminent).disabled(model.busy || !model.trusted || model.selectedIDs.isEmpty || model.selectedIDs.count > model.layout.windowCount || destinationError != nil)
                         .help("按列表顺序排列所选窗口，成功后自动收起面板。")
                     Button("撤销", action: model.undo).disabled(model.busy || model.undoCount == 0)
                     Spacer()
@@ -206,8 +204,32 @@ struct PaletteView: View {
             .onAppear(perform:limitSelection)
             .onChange(of:model.preferences.activeLayout) { _,_ in limitSelection() }
     }
+    @ViewBuilder private var layoutPreviews: some View {
+        if let error = destinationError {
+            Text(error).font(.callout).foregroundStyle(.secondary).frame(height:108).fixedSize(horizontal:false,vertical:true)
+        } else if let groups = try? destinationResult.get() {
+            if model.layout.screens.isEmpty, let group = groups.first { preview(group).frame(height:108) }
+            else {
+                ScrollView(.horizontal) {
+                    HStack(alignment:.top,spacing:12) {
+                        ForEach(groups,id:\.screenID) { group in
+                            VStack(spacing:5) {
+                                Text(model.layout.screens.first{$0.id == group.screenID}?.name ?? "显示器").font(.caption).lineLimit(1)
+                                preview(group).aspectRatio(group.bounds.width/group.bounds.height,contentMode:.fit).frame(height:86)
+                            }.frame(width:groups.count == 1 ? 280 : 155)
+                        }
+                    }
+                }.frame(height:112)
+            }
+        }
+    }
+    private func preview(_ group: WindowGroup) -> some View {
+        LayoutCanvas(root:group.preset.root,emptyPanes:group.preset.emptyPanes,names:group.members.mapValues{$0.app.name},details:group.members.mapValues{$0.title}) { slot in
+            model.place(target,slot:slot,in:group) { success in if success { close() } }
+        }
+    }
     private func limitSelection() {
-        if model.selectedIDs.count > model.layout.windowPanes.count { model.selectedIDs = [target.id] }
+        if model.selectedIDs.count > model.layout.windowCount { model.selectedIDs = [target.id] }
     }
 }
 

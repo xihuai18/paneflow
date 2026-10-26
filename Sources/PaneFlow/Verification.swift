@@ -99,6 +99,14 @@ private struct HandlePreview: NSViewRepresentable {
         try require(model.saveLayout(blankLayout) && AppModel(storageURL:path).layout.emptyPanes == blankLayout.emptyPanes,"blank regions survive save and reload",&results)
         let blankState = LayoutManagerState(model:model); blankState.duplicate()
         try require(blankState.current.emptyPanes == blankLayout.emptyPanes,"copy preserves blank regions",&results)
+        var versionTwo = try JSONSerialization.jsonObject(with:Data(contentsOf:path)) as! [String:Any]
+        versionTwo["version"] = 2
+        let versionTwoPath = fixture.appendingPathComponent("version-two.json")
+        let versionTwoBytes = try JSONSerialization.data(withJSONObject:versionTwo)
+        try versionTwoBytes.write(to:versionTwoPath)
+        let versionTwoModel = AppModel(storageURL:versionTwoPath)
+        try require(versionTwoModel.preferences.version == 3 && versionTwoModel.preferences.customLayouts == model.preferences.customLayouts,"version-two layouts retain geometry and blank regions after migration",&results)
+        try require((try Data(contentsOf:versionTwoPath.appendingPathExtension("backup-before-multiscreen-v3"))) == versionTwoBytes,"version-two migration retains exact original bytes",&results)
         var oldSettings = try JSONSerialization.jsonObject(with:Data(contentsOf:path)) as! [String:Any]
         oldSettings["version"] = 1
         oldSettings["customLayouts"] = (oldSettings["customLayouts"] as! [[String:Any]]).map { item -> [String:Any] in var item = item; item["emptyPanes"] = nil; return item }
@@ -106,11 +114,39 @@ private struct HandlePreview: NSViewRepresentable {
         let legacyBytes = try JSONSerialization.data(withJSONObject:oldSettings)
         try legacyBytes.write(to:legacyPath)
         let migrated = AppModel(storageURL:legacyPath)
-        try require(migrated.preferences.version == 2 && migrated.preferences.customLayouts.allSatisfy{$0.emptyPanes.isEmpty},"old layouts retain all original window regions after migration",&results)
-        try require((try Data(contentsOf:legacyPath.appendingPathExtension("backup-before-blank-v2"))) == legacyBytes,"migration retains an exact backup of original settings",&results)
+        try require(migrated.preferences.version == 3 && migrated.preferences.customLayouts.allSatisfy{$0.emptyPanes.isEmpty && $0.screens.isEmpty},"old layouts retain all original window regions after migration",&results)
+        try require((try Data(contentsOf:legacyPath.appendingPathExtension("backup-before-multiscreen-v3"))) == legacyBytes,"migration retains an exact backup of original settings",&results)
         let bytes = try Data(contentsOf:path)
         state.create(); state.discardAll()
         try require(state.dirtyIDs.isEmpty && (try Data(contentsOf:path)) == bytes,"discarding drafts does not modify saved settings",&results)
+        let displays = [Desktop(id:"display-a",name:"显示器 A",frame:CGRect(x:-1600,y:0,width:1600,height:1000),visible:CGRect(x:-1600,y:30,width:1600,height:970),scale:1),
+                        Desktop(id:"display-b",name:"显示器 B",frame:CGRect(x:0,y:-1200,width:900,height:1200),visible:CGRect(x:0,y:-1170,width:900,height:1170),scale:2)]
+        let multiState = LayoutManagerState(model:model,displays:displays)
+        multiState.setScreen(id:displays[0].id,name:displays[0].name,enabled:true)
+        var first = multiState.partition; first.root = LayoutPreset.builtins[0].root; first.emptyPanes = []
+        multiState.updatePartition(first)
+        multiState.setScreen(id:displays[1].id,name:displays[1].name,enabled:true)
+        var second = multiState.partition; second.root = LayoutPreset.builtins[1].root; second.emptyPanes = []
+        multiState.updatePartition(second)
+        try require(multiState.current.screens[0].root == first.root && multiState.current.screens[1].root == second.root,"editing one display preserves the other display",&results)
+        multiState.setScreen(id:displays[0].id,name:displays[0].name,enabled:false)
+        multiState.setScreen(id:displays[0].id,name:displays[0].name,enabled:true)
+        try require(multiState.partition.root == first.root,"temporarily deselecting a display retains its draft",&results)
+        try require(multiState.save() && AppModel(storageURL:path).layout.screens == multiState.current.screens,"selected displays and their layouts survive save and reload",&results)
+        let resolved = try model.layoutGroups(model.layout,on:displays,fallback:displays[0])
+        try require(resolved.count == 2 && resolved[0].screenID == displays[1].id && resolved[1].screenID == displays[0].id
+                    && resolved[0].bounds == displays[1].visible.insetBy(dx:model.preferences.margin,dy:model.preferences.margin)
+                    && resolved[0].scale == 2,"screen plan uses selected order, each usable frame and each pixel scale",&results)
+        var missingRejected = false
+        do { _ = try model.layoutGroups(model.layout,on:[displays[0]],fallback:displays[0]) } catch { missingRejected = true }
+        try require(missingRejected,"missing selected displays fail before any windows move",&results)
+        multiState.duplicate()
+        try require(multiState.current.screens == model.layout.screens,"copy preserves the complete multi-display layout",&results)
+        multiState.useCurrentScreen()
+        try require(multiState.current.screens.isEmpty && multiState.current.root == first.root,"returning to current-screen mode keeps the edited partition",&results)
+        multiState.setScreen(id:displays[0].id,name:displays[0].name,enabled:true)
+        multiState.setScreen(id:displays[0].id,name:displays[0].name,enabled:false)
+        try require(multiState.current.screens.isEmpty && multiState.current.root == first.root,"deselecting the last display preserves its edited current-screen layout",&results)
     }
     private static func blankPair() -> LayoutPreset {
         let pair = LayoutNode.split(id:"pair-divider",axis:.horizontal,ratio:0.5,first:.pane("a"),second:.pane("b"))
@@ -155,6 +191,20 @@ private struct HandlePreview: NSViewRepresentable {
             try await capture(LayoutManagerView(state:manager),size:NSSize(width:780,height:580),name:"layouts-compact-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
             manager.selectedID = "centered-two-thirds"; manager.duplicate()
             try await capture(LayoutManagerView(state:manager),size:NSSize(width:880,height:620),name:"layouts-blank-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
+            let previewDisplays = [Desktop(id:"preview-a",name:"显示器 A",frame:CGRect(x:0,y:0,width:1600,height:1000),visible:CGRect(x:0,y:30,width:1600,height:970),scale:1),
+                                   Desktop(id:"preview-b",name:"显示器 B",frame:CGRect(x:1600,y:0,width:900,height:1440),visible:CGRect(x:1600,y:30,width:900,height:1410),scale:2)]
+            let multiManager = LayoutManagerState(model:model,displays:previewDisplays)
+            multiManager.duplicate()
+            for display in previewDisplays { multiManager.setScreen(id:display.id,name:display.name,enabled:true) }
+            try await capture(LayoutManagerView(state:multiManager),size:NSSize(width:880,height:660),name:"layouts-multiscreen-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
+            if Desktop.all.count >= 2 {
+                let configs = Desktop.all.prefix(2).enumerated().map { index,display in ScreenLayout(id:display.id,name:"显示器 \(index+1)",root:LayoutPreset.builtins[index].root) }
+                let multiPreview = LayoutPreset(id:"multi-interface",name:"双屏工作",root:.pane("a"),screens:configs)
+                if let index = model.preferences.customLayouts.firstIndex(where:{$0.id == multiPreview.id}) { model.preferences.customLayouts[index] = multiPreview }
+                else { model.preferences.customLayouts.append(multiPreview) }
+                model.preferences.activeLayout = multiPreview.id
+                try await capture(PaletteView(model:model,target:sample,close:{},edit:{}),size:NSSize(width:380,height:540),name:"palette-multiscreen-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
+            }
             model.preferences.activeLayout = "centered-two-thirds"; model.selectedIDs = [sample.id]; model.linkStatus = "尚未建立联动布局"
             try await capture(PaletteView(model:model,target:sample,close:{},edit:{}),size:NSSize(width:380,height:540),name:"palette-blank-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
             model.preferences.activeLayout = LayoutPreset.builtins[3].id; model.selectedIDs = Set(samples.map(\.id))
@@ -215,7 +265,8 @@ private struct HandlePreview: NSViewRepresentable {
         let originals = windows.map { WindowMove(window:$0,frame:$0.frame) }
         do {
             try require(windows.count==3,"three separate-process practice windows",&results)
-            guard let desktop = model.desktop(for:windows[0].frame) else { throw LayoutError.invalid }
+            guard let initialDesktop = model.desktop(for:windows[0].frame) else { throw LayoutError.invalid }
+            let desktop = Desktop.all.first(where:{$0.id != initialDesktop.id}) ?? initialDesktop
             let application = AXUIElementCreateApplication(app.pid)
             let exerciseEnhanced = !NSWorkspace.shared.isVoiceOverEnabled && !NSWorkspace.shared.isSwitchControlEnabled
             if exerciseEnhanced {
@@ -235,6 +286,7 @@ private struct HandlePreview: NSViewRepresentable {
             if exerciseEnhanced {
                 try require(WindowAccess.value(application,"AXEnhancedUserInterface") as? Bool == true,"arrangement restores practice enhanced accessibility",&results)
             }
+            if Desktop.all.count >= 2 { try await multiScreenChecks(model:model,windows:windows,results:&results) }
             let fullLayoutFrames = await model.access.read(windows), fullDepth = model.undoCount
             model.preferences.activeLayout = "centered-two-thirds"; model.selectedIDs = [windows[0].id]
             model.arrangeSelected(); await Task.yield()
@@ -466,6 +518,41 @@ private struct HandlePreview: NSViewRepresentable {
         let restored = await model.access.apply(originals.filter { remaining[$0.window.id] != nil })
         helper.terminate()
         try require(restored.succeeded,"restore original practice frames",&results)
+    }
+    private static func multiScreenChecks(model:AppModel, windows:[LiveWindow], results:inout [[String:Any]]) async throws {
+        let displays = Desktop.all
+        let selected = [displays[0],displays[displays.count-1]]
+        let savedPreferences = model.preferences, savedSelection = model.selectedIDs
+        defer { model.preferences = savedPreferences; model.selectedIDs = savedSelection }
+        let before = await model.access.read(windows), previousGroups = model.groups, depth = model.undoCount
+        let plan = LayoutPreset(id:"multi-native-fixture",name:"双屏练习",root:.pane("a"),screens:selected.map { ScreenLayout(id:$0.id,name:$0.name,root:.pane("a")) })
+        guard model.saveLayout(plan) else { throw LayoutError.invalid }
+        model.selectedIDs = Set(windows.prefix(2).map(\.id))
+        let arranged: Bool = await withCheckedContinuation { continuation in model.arrangeSelected { continuation.resume(returning:$0) } }
+        try require(arranged && model.undoCount == depth+1,"one transaction arranges selected windows across two actual displays",&results)
+        let groups = model.groups.filter{$0.preset.id == plan.id}, actual = await model.access.read(windows)
+        try require(groups.count == 2 && selected.enumerated().allSatisfy { index,display in
+            groups.first{$0.screenID == display.id}.flatMap { group in actual[windows[index].id].map { FrameSettler.matches($0,group.bounds) } } == true
+        },"each cross-screen window matches its own display's usable frame",&results)
+        try require(actual[windows[2].id].flatMap { frame in before[windows[2].id].map{FrameSettler.matches(frame,$0)} } == true,"unselected practice window stays in place during cross-screen arrangement",&results)
+        try require(selected.allSatisfy { model.dropDestination(at:CGPoint(x:$0.visible.midX,y:$0.visible.midY))?.screenID == $0.id },"Option-drop resolves each selected physical display",&results)
+        if let excluded = displays.first(where:{display in !selected.contains{$0.id == display.id}}) {
+            try require(model.dropDestination(at:CGPoint(x:excluded.visible.midX,y:excluded.visible.midY)) == nil,"unselected physical display cannot become an Option-drop target",&results)
+        }
+        guard let destination = groups.first(where:{$0.screenID == selected[1].id}) else { throw LayoutError.invalid }
+        let swapped: Bool = await withCheckedContinuation { continuation in model.place(windows[0],slot:"a",in:destination) { continuation.resume(returning:$0) } }
+        let swappedFrames = await model.access.read(windows)
+        try require(swapped && swappedFrames[windows[0].id].flatMap { f in actual[windows[1].id].map{FrameSettler.matches(f,$0)} } == true
+                    && swappedFrames[windows[1].id].flatMap { f in actual[windows[0].id].map{FrameSettler.matches(f,$0)} } == true,"cross-screen slot exchange moves both windows to the correct monitors",&results)
+        model.undo(); await Task.yield()
+        for _ in 0..<200 { if !model.busy && model.undoCount == depth+1 { break }; try await Task.sleep(for:.milliseconds(100)) }
+        let swapUndo = await model.access.read(windows)
+        try require(windows.prefix(2).allSatisfy { item in swapUndo[item.id].flatMap{f in actual[item.id].map{FrameSettler.matches(f,$0)}} == true },"cross-screen exchange undo restores both monitor positions",&results)
+        model.undo(); await Task.yield()
+        for _ in 0..<200 { if !model.busy && model.undoCount == depth { break }; try await Task.sleep(for:.milliseconds(100)) }
+        let arrangementUndo = await model.access.read(windows)
+        try require(model.undoCount == depth && Set(model.groups.map(\.id)) == Set(previousGroups.map(\.id))
+                    && windows.allSatisfy { item in arrangementUndo[item.id].flatMap{f in before[item.id].map{FrameSettler.matches(f,$0)}} == true },"one undo restores the entire cross-screen arrangement and previous groups",&results)
     }
     private static func resizeThroughHandle(_ delegate:AppDelegate, group:WindowGroup, seam:LayoutSeam, to coordinate:Double, results:inout [[String:Any]]) async throws -> Bool {
         guard let link = try group.geometry().links(assigned:Set(group.members.keys)).first(where:{$0.seam.id==seam.id}),
