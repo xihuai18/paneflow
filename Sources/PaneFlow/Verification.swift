@@ -105,8 +105,8 @@ private struct HandlePreview: NSViewRepresentable {
         let versionTwoBytes = try JSONSerialization.data(withJSONObject:versionTwo)
         try versionTwoBytes.write(to:versionTwoPath)
         let versionTwoModel = AppModel(storageURL:versionTwoPath)
-        try require(versionTwoModel.preferences.version == 3 && versionTwoModel.preferences.customLayouts == model.preferences.customLayouts,"version-two layouts retain geometry and blank regions after migration",&results)
-        try require((try Data(contentsOf:versionTwoPath.appendingPathExtension("backup-before-multiscreen-v3"))) == versionTwoBytes,"version-two migration retains exact original bytes",&results)
+        try require(versionTwoModel.preferences.version == 4 && versionTwoModel.preferences.customLayouts == model.preferences.customLayouts,"version-two layouts retain geometry and blank regions after migration",&results)
+        try require((try Data(contentsOf:versionTwoPath.appendingPathExtension("backup-before-window-capture-v4"))) == versionTwoBytes,"version-two migration retains exact original bytes",&results)
         var oldSettings = try JSONSerialization.jsonObject(with:Data(contentsOf:path)) as! [String:Any]
         oldSettings["version"] = 1
         oldSettings["customLayouts"] = (oldSettings["customLayouts"] as! [[String:Any]]).map { item -> [String:Any] in var item = item; item["emptyPanes"] = nil; return item }
@@ -114,8 +114,8 @@ private struct HandlePreview: NSViewRepresentable {
         let legacyBytes = try JSONSerialization.data(withJSONObject:oldSettings)
         try legacyBytes.write(to:legacyPath)
         let migrated = AppModel(storageURL:legacyPath)
-        try require(migrated.preferences.version == 3 && migrated.preferences.customLayouts.allSatisfy{$0.emptyPanes.isEmpty && $0.screens.isEmpty},"old layouts retain all original window regions after migration",&results)
-        try require((try Data(contentsOf:legacyPath.appendingPathExtension("backup-before-multiscreen-v3"))) == legacyBytes,"migration retains an exact backup of original settings",&results)
+        try require(migrated.preferences.version == 4 && migrated.preferences.customLayouts.allSatisfy{$0.emptyPanes.isEmpty && $0.screens.isEmpty},"old layouts retain all original window regions after migration",&results)
+        try require((try Data(contentsOf:legacyPath.appendingPathExtension("backup-before-window-capture-v4"))) == legacyBytes,"migration retains an exact backup of original settings",&results)
         let bytes = try Data(contentsOf:path)
         state.create(); state.discardAll()
         try require(state.dirtyIDs.isEmpty && (try Data(contentsOf:path)) == bytes,"discarding drafts does not modify saved settings",&results)
@@ -147,6 +147,28 @@ private struct HandlePreview: NSViewRepresentable {
         multiState.setScreen(id:displays[0].id,name:displays[0].name,enabled:true)
         multiState.setScreen(id:displays[0].id,name:displays[0].name,enabled:false)
         try require(multiState.current.screens.isEmpty && multiState.current.root == first.root,"deselecting the last display preserves its edited current-screen layout",&results)
+        var versionThree = try JSONSerialization.jsonObject(with:Data(contentsOf:path)) as! [String:Any]; versionThree["version"] = 3
+        let versionThreePath = fixture.appendingPathComponent("version-three.json"), versionThreeBytes = try JSONSerialization.data(withJSONObject:versionThree)
+        try versionThreeBytes.write(to:versionThreePath)
+        let versionThreeModel = AppModel(storageURL:versionThreePath)
+        try require(versionThreeModel.preferences.version == 4 && versionThreeModel.preferences.customLayouts == model.preferences.customLayouts,"version-three screen choices and partitions survive migration",&results)
+        try require((try Data(contentsOf:versionThreePath.appendingPathExtension("backup-before-window-capture-v4"))) == versionThreeBytes,"version-three migration retains exact original bytes",&results)
+        let captureModel = AppModel(storageURL:fixture.appendingPathComponent("capture.json")); captureModel.preferences.margin = 10; captureModel.preferences.gap = 8
+        let captureState = LayoutManagerState(model:captureModel,displays:displays); captureState.create()
+        let app = WindowApp(pid:ProcessInfo.processInfo.processIdentifier,name:"示例应用",bundleID:"app.example.capture")
+        let samples = displays.enumerated().map { index,display in LiveWindow(id:"capture-window-\(index)",element:AXUIElementCreateApplication(app.pid),app:app,title:"窗口内容不应保存",frame:display.visible) }
+        try captureState.captureWindows(samples)
+        try require(captureState.current.screens.count == 2 && captureState.current.windowCount == 2 && captureState.isDirty && captureModel.preferences.customLayouts.isEmpty,"reading windows creates a complete cross-screen draft before saving",&results)
+        let captureGroups = try captureModel.layoutGroups(captureState.current,on:displays,fallback:displays[0])
+        try require(captureModel.preferences.gap == 8 && captureModel.preferences.margin == 10 && captureGroups.allSatisfy { group in group.gap == 0 && group.bounds == displays.first{$0.id == group.screenID}?.visible },"captured spacing and margins override only this layout without changing global settings",&results)
+        let encoded = String(decoding:try JSONEncoder().encode(captureState.current),as:UTF8.self)
+        try require(!encoded.contains(app.name) && !encoded.contains(samples[0].title) && !encoded.contains(samples[0].id),"imported layouts store geometry without window identities or titles",&results)
+        let good = captureState.current
+        var overlapping = samples[1]; overlapping.id = "overlap-window"; overlapping.frame = samples[1].frame.offsetBy(dx:10,dy:10)
+        var captureRejected = false
+        do { try captureState.captureWindows(samples+[overlapping]) } catch { captureRejected = true }
+        try require(captureRejected && captureState.current == good,"a failed import leaves the previous draft unchanged on every display",&results)
+        try require(captureState.save() && AppModel(storageURL:fixture.appendingPathComponent("capture.json")).layout == captureState.current,"captured layout geometry survives a normal save and reload",&results)
     }
     private static func blankPair() -> LayoutPreset {
         let pair = LayoutNode.split(id:"pair-divider",axis:.horizontal,ratio:0.5,first:.pane("a"),second:.pane("b"))
@@ -200,6 +222,11 @@ private struct HandlePreview: NSViewRepresentable {
             let third = Desktop(id:"preview-c",name:"显示器 C",frame:CGRect(x:100,y:1000,width:1400,height:900),visible:CGRect(x:100,y:1030,width:1400,height:870),scale:2)
             multiManager.displays.append(third); multiManager.setScreen(id:third.id,name:third.name,enabled:true)
             try await capture(LayoutManagerView(state:multiManager),size:NSSize(width:780,height:580),name:"layouts-overview-three-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
+            let captureManager = LayoutManagerState(model:AppModel(ephemeral:true),displays:previewDisplays); captureManager.create()
+            let captureApp = WindowApp(pid:ProcessInfo.processInfo.processIdentifier,name:"示例浏览器",bundleID:"app.example.capture")
+            let captureFrames = [CGRect(x:40,y:60,width:700,height:700),CGRect(x:800,y:60,width:700,height:700),CGRect(x:1640,y:60,width:800,height:1300)]
+            let captureWindows = captureFrames.enumerated().map { index,frame in LiveWindow(id:"capture-preview-\(index)",element:AXUIElementCreateApplication(captureApp.pid),app:captureApp,title:"示例窗口 \(index+1)",frame:frame) }
+            try await capture(WindowCaptureView(manager:captureManager,fixtures:captureWindows,selected:[captureWindows[0].id,captureWindows[2].id]),size:NSSize(width:1000,height:640),name:"capture-windows-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
             if Desktop.all.count >= 2 {
                 let configs = Desktop.all.prefix(2).enumerated().map { index,display in ScreenLayout(id:display.id,name:"显示器 \(index+1)",root:LayoutPreset.builtins[index].root) }
                 let multiPreview = LayoutPreset(id:"multi-interface",name:"双屏工作",root:.pane("a"),screens:configs)
@@ -537,6 +564,16 @@ private struct HandlePreview: NSViewRepresentable {
         try require(groups.count == 2 && selected.enumerated().allSatisfy { index,display in
             groups.first{$0.screenID == display.id}.flatMap { group in actual[windows[index].id].map { FrameSettler.matches($0,group.bounds) } } == true
         },"each cross-screen window matches its own display's usable frame",&results)
+        let captureModel = AppModel(ephemeral:true); captureModel.preferences.margin = model.preferences.margin
+        let captureManager = LayoutManagerState(model:captureModel); captureManager.create()
+        let capture = WindowCaptureState(manager:captureManager)
+        await capture.refresh(apps:[windows[0].app])
+        try require(capture.windows.count == 3,"window picker reads all owned practice windows",&results)
+        capture.selected = Set(capture.windows.filter { item in windows.prefix(2).contains{CFEqual($0.element,item.element)} }.map(\.id))
+        let captured = await capture.confirm()
+        try require(captured && captureManager.current.windowCount == 2 && captureManager.current.screens.count == 2 && captureManager.isDirty,"checked live windows generate a draft from freshly read cross-screen frames",&results)
+        let afterCapture = await model.access.read(windows)
+        try require(windows.allSatisfy { item in afterCapture[item.id].flatMap{f in actual[item.id].map{FrameSettler.matches(f,$0)}} == true },"reading and confirming a window layout does not move any real practice window",&results)
         try require(actual[windows[2].id].flatMap { frame in before[windows[2].id].map{FrameSettler.matches(frame,$0)} } == true,"unselected practice window stays in place during cross-screen arrangement",&results)
         try require(selected.allSatisfy { model.dropDestination(at:CGPoint(x:$0.visible.midX,y:$0.visible.midY))?.screenID == $0.id },"Option-drop resolves each selected physical display",&results)
         if let excluded = displays.first(where:{display in !selected.contains{$0.id == display.id}}) {

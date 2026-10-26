@@ -144,6 +144,23 @@ import PaneFlowCore
         check("overview fits all negative-origin and portrait displays",fitted.count == 3 && fitted.allSatisfy{overviewBounds.contains($0)})
         check("overview preserves relative monitor positions",fitted[0].maxX <= fitted[1].minX+0.001 && fitted[1].maxY <= fitted[2].minY+0.001)
         check("overview uses the same scale for all displays",abs(fitted[0].width/monitors[0].width-fitted[1].height/monitors[1].height)<0.000001)
+        let importedCenter = try LayoutPreset.capturing([centerFrame],in:bounds)
+        let importedGeometry = try LayoutGeometry.make(importedCenter.root,in:bounds,gap:0,scale:2)
+        check("capturing a centered window retains its size and surrounding blanks",importedCenter.windowCount == 1 && importedCenter.emptyPanes.count == 2 && importedGeometry.panes[importedCenter.windowPanes[0]].map{FrameSettler.matches($0,centerFrame)} == true)
+        let importedFrames = [CGRect(x:bounds.minX+30,y:bounds.minY+40,width:480,height:500),CGRect(x:bounds.minX+650,y:bounds.minY+80,width:500,height:600)]
+        let importedPair = try LayoutPreset.capturing(importedFrames,in:bounds)
+        let pairFrames = try LayoutGeometry.make(importedPair.root,in:bounds,gap:0,scale:2)
+        check("capturing separated windows preserves each observed rectangle",importedPair.windowCount == 2 && importedFrames.allSatisfy { frame in importedPair.windowPanes.contains { pairFrames.panes[$0].map{FrameSettler.matches($0,frame)} == true } })
+        var overlapRejected = false
+        do { _ = try LayoutPreset.capturing([importedFrames[0],importedFrames[0].offsetBy(dx:20,dy:20)],in:bounds) } catch LayoutCaptureError.overlap { overlapRejected = true }
+        check("overlapping windows cannot silently replace each other",overlapRejected)
+        var outsideRejected = false
+        do { _ = try LayoutPreset.capturing([bounds.offsetBy(dx:100,dy:0)],in:bounds) } catch LayoutCaptureError.outside { outsideRejected = true }
+        check("windows crossing a screen boundary are not silently clipped",outsideRejected)
+        let pinwheel = [CGRect(x:0,y:0,width:700,height:300),CGRect(x:700,y:0,width:300,height:700),CGRect(x:300,y:700,width:700,height:300),CGRect(x:0,y:300,width:300,height:700),CGRect(x:300,y:300,width:400,height:400)]
+        var complexRejected = false
+        do { _ = try LayoutPreset.capturing(pinwheel,in:CGRect(x:0,y:0,width:1000,height:1000)) } catch LayoutCaptureError.complex { complexRejected = true }
+        check("non-slicing arrangements fail without dropping a window",complexRejected)
         print("PASS: \(passed) core checks")
     }
 }

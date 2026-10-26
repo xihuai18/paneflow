@@ -4,12 +4,13 @@ import PaneFlowCore
 
 @MainActor final class LayoutManagerState: ObservableObject {
     let model: AppModel
-    @Published var selectedID: String
+    @Published var selectedID: String { didSet { if selectedID != oldValue { onDisplaySelectionChanged?() } } }
     @Published var drafts: [String:LayoutPreset]
     @Published var order: [String]
     @Published var error: String?
     @Published var displays: [Desktop]
     @Published var screenID = ""
+    var onDisplaySelectionChanged: (() -> Void)?
     private var screenDrafts: [String:[String:ScreenLayout]] = [:]
     init(model: AppModel, displays: [Desktop]? = nil) {
         self.model = model; selectedID = model.layout.id
@@ -44,11 +45,35 @@ import PaneFlowCore
             if next.screens.isEmpty { next.root = previous.root; next.emptyPanes = previous.emptyPanes }
         }
         drafts[selectedID] = next
+        onDisplaySelectionChanged?()
     }
     func useCurrentScreen() {
         for screen in current.screens { screenDrafts[selectedID,default:[:]][screen.id] = screen }
         var next = current; next.root = partition.root; next.emptyPanes = partition.emptyPanes; next.screens = []
         drafts[selectedID] = next; screenID = ""
+        onDisplaySelectionChanged?()
+    }
+    func captureWindows(_ windows: [LiveWindow]) throws {
+        guard !isBuiltin, !windows.isEmpty else { throw LayoutCaptureError.empty }
+        var frames: [String:[CGRect]] = [:]
+        for window in windows {
+            guard let display = displays.max(by:{a,b in
+                let first = a.frame.intersection(window.frame), second = b.frame.intersection(window.frame)
+                return (first.isNull ? 0 : first.width*first.height) < (second.isNull ? 0 : second.width*second.height)
+            }) else { throw LayoutCaptureError.outside }
+            frames[display.id,default:[]].append(window.frame)
+        }
+        var captured: [ScreenLayout] = []
+        for display in displays {
+            guard let values = frames[display.id] else { continue }
+            let value = try LayoutPreset.capturing(values,in:display.visible)
+            captured.append(.init(id:display.id,name:display.name,root:value.root,emptyPanes:value.emptyPanes))
+        }
+        guard let first = captured.first else { throw LayoutCaptureError.empty }
+        var next = current; next.root = first.root; next.emptyPanes = first.emptyPanes; next.screens = captured; next.capturedSpacing = true
+        try next.validate()
+        drafts[selectedID] = next; screenDrafts[selectedID] = nil; screenID = first.id; error = nil
+        onDisplaySelectionChanged?()
     }
     private func uniqueName(_ base: String) -> String {
         let names = Set((LayoutPreset.builtins+customLayouts).map(\.name))
@@ -62,7 +87,7 @@ import PaneFlowCore
         drafts[draft.id] = draft; order.append(draft.id); selectedID = draft.id; error = nil
     }
     func duplicate() {
-        let draft = LayoutPreset(name:uniqueName(current.name+" 副本"),root:current.root,emptyPanes:current.emptyPanes,screens:current.screens)
+        let draft = LayoutPreset(name:uniqueName(current.name+" 副本"),root:current.root,emptyPanes:current.emptyPanes,screens:current.screens,capturedSpacing:current.capturedSpacing)
         drafts[draft.id] = draft; order.append(draft.id); selectedID = draft.id; error = nil
     }
     @discardableResult func save(_ id: String? = nil) -> Bool {
@@ -100,12 +125,28 @@ import PaneFlowCore
     let window: NSWindow
     init(model: AppModel) {
         state = LayoutManagerState(model:model)
-        window = NSWindow(contentRect:NSRect(x:0,y:0,width:880,height:620),styleMask:[.titled,.closable,.miniaturizable,.resizable],backing:.buffered,defer:false)
+        window = NSWindow(contentRect:NSRect(x:0,y:0,width:1120,height:740),styleMask:[.titled,.closable,.miniaturizable,.resizable],backing:.buffered,defer:false)
         super.init()
         window.title = "布局管理 · PaneFlow"; window.isReleasedWhenClosed = false
-        window.minSize = NSSize(width:780,height:600); window.delegate = self
+        window.minSize = NSSize(width:900,height:620); window.delegate = self
         window.contentView = NSHostingView(rootView:LayoutManagerView(state:state))
         window.center()
+        state.onDisplaySelectionChanged = { [weak self] in self?.resizeToDisplays(growOnly:true) }
+        resizeToDisplays(growOnly:false)
+    }
+    private func resizeToDisplays(growOnly: Bool) {
+        guard let screen = window.screen ?? NSScreen.main else { return }
+        let available = screen.visibleFrame.insetBy(dx:24,dy:24)
+        let frames = state.current.screens.compactMap { config in state.displays.first{$0.id == config.id}?.frame }
+        let union = frames.reduce(CGRect.null) { $0.union($1) }
+        let aspect = union.isNull ? 1.8 : union.width/union.height
+        let canvasWidth = min(1120,max(780,aspect*440))
+        let desired = NSSize(width:max(1120,canvasWidth+280),height:max(720,min(880,canvasWidth/aspect+300)))
+        let width = min(available.width,max(desired.width,growOnly ? window.frame.width : 0))
+        let height = min(available.height,max(desired.height,growOnly ? window.frame.height : 0))
+        window.minSize = NSSize(width:min(900,available.width),height:min(620,available.height))
+        let next = DisplayGeometry.clampPanel(CGRect(x:window.frame.midX-width/2,y:window.frame.midY-height/2,width:width,height:height),to:available)
+        if next != window.frame { window.setFrame(next,display:true,animate:window.isVisible && !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion) }
     }
     func show() {
         if !window.isVisible && state.dirtyIDs.isEmpty { state.discardAll() }
@@ -252,6 +293,7 @@ private struct LayoutDetailsView: View {
     @State private var selected: String?
     @State private var seamID = ""
     @State private var selectedScreenID = ""
+    @State private var showCapture = false
     private var draft: Binding<LayoutPreset> {
         Binding(get:{state.current},set:{ if !state.isBuiltin { state.drafts[state.selectedID] = $0 } })
     }
@@ -314,6 +356,7 @@ private struct LayoutDetailsView: View {
                 }
             }
         }.padding(24).background(Color(nsColor:.windowBackgroundColor))
+            .sheet(isPresented:$showCapture) { WindowCaptureView(manager:state) }
             .onAppear(perform:resetSelection)
             .onChange(of:state.selectedID) { _,_ in state.screenID = ""; resetSelection() }
             .onChange(of:state.editingScreenID) { _,id in if selectedScreenID != id { resetSelection() } }
@@ -346,6 +389,11 @@ private struct LayoutDetailsView: View {
                     Toggle("\(screen.name)（未连接）",isOn:Binding(get:{true},set:{state.setScreen(id:screen.id,name:screen.name,enabled:$0)}))
                 }
             } label: { Label(state.current.screens.isEmpty ? "显示器：当前屏幕" : "显示器：\(state.current.screens.count) 块",systemImage:"display.2") }
+            Button("读取窗口排列…") { showCapture = true }.help("勾选当前窗口，按它们的位置和大小生成布局")
+            if state.current.capturedSpacing {
+                Menu("间距：已读取") { Button("跟随设置间距与留边") { draft.wrappedValue.capturedSpacing = false } }
+                    .help("当前布局保留读取到的窗口间隙和留边")
+            }
         }.controlSize(.small)
     }
     private func activateScreen(_ id: String) {

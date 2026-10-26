@@ -267,6 +267,7 @@ struct PreferencesView: View {
                 HStack { Text("窗口间距"); Slider(value: $model.preferences.gap, in: 0...40, step: 1); Text("\(Int(model.preferences.gap)) pt").monospacedDigit().frame(width: 48) }
                 HStack { Text("屏幕留边"); Slider(value: $model.preferences.margin, in: 0...80, step: 1); Text("\(Int(model.preferences.margin)) pt").monospacedDigit().frame(width: 48) }
                 Text("间距修改会用于下一次放置或排列。").font(.caption).foregroundStyle(.secondary)
+                if model.layout.capturedSpacing { Text("当前布局保留读取到的窗口间隙和留边，可在布局管理中改为跟随设置。").font(.caption).foregroundStyle(.secondary) }
                 Button("布局管理…", action: edit)
             }
             Section("使用") {

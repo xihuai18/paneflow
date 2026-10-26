@@ -4,7 +4,7 @@ import PaneFlowCore
 import ColorSync
 
 struct Preferences: Codable {
-    var version = 3
+    var version = 4
     var activeLayout = "wide"
     var customLayouts: [LayoutPreset] = []
     var gap: Double = 0
@@ -84,14 +84,14 @@ struct UndoEntry { var frames: [WindowMove]; var groups: [WindowGroup] }
         guard let storage, FileManager.default.fileExists(atPath: storage.path) else { return }
         do {
             var value = try JSONDecoder().decode(Preferences.self, from: Data(contentsOf: storage))
-            guard (1...3).contains(value.version), value.customLayouts.count <= 100,
+            guard (1...4).contains(value.version), value.customLayouts.count <= 100,
                   value.gap.isFinite, (0...40).contains(value.gap), value.margin.isFinite, (0...80).contains(value.margin),
                   Set(value.customLayouts.map(\.id)).count == value.customLayouts.count else { throw LayoutError.invalid }
             for item in value.customLayouts { try item.validate(); guard !item.name.isEmpty, item.name.count <= 80 else { throw LayoutError.invalid } }
-            if value.version < 3 {
-                let backup = storage.appendingPathExtension("backup-before-multiscreen-v3")
+            if value.version < 4 {
+                let backup = storage.appendingPathExtension("backup-before-window-capture-v4")
                 if !FileManager.default.fileExists(atPath:backup.path) { try FileManager.default.copyItem(at:storage,to:backup) }
-                value.version = 3
+                value.version = 4
             }
             preferences = value
         } catch { canPersist = false; notice = "设置文件无法读取，已保留原文件。请在设置中备份并重置后保存。" }
@@ -158,8 +158,9 @@ struct UndoEntry { var frames: [WindowMove]; var groups: [WindowGroup] }
         Desktop.all.max { a, b in a.frame.intersection(frame).area < b.frame.intersection(frame).area }
     }
     func makeGroup(layout: LayoutPreset, desktop: Desktop) -> WindowGroup {
-        .init(preset: layout, bounds: desktop.visible.insetBy(dx: preferences.margin, dy: preferences.margin), screenID: desktop.id,
-              scale: desktop.scale, gap: preferences.gap, members: [:])
+        let margin = layout.capturedSpacing ? 0 : preferences.margin
+        return .init(preset: layout, bounds: desktop.visible.insetBy(dx:margin,dy:margin), screenID: desktop.id,
+                     scale: desktop.scale, gap: layout.capturedSpacing ? 0 : preferences.gap, members: [:])
     }
     func layoutGroups(_ preset: LayoutPreset, on desktops: [Desktop], fallback: Desktop?, reusingExisting: Bool = false) throws -> [WindowGroup] {
         let targets: [Desktop]
@@ -176,8 +177,9 @@ struct UndoEntry { var frames: [WindowMove]; var groups: [WindowGroup] }
         }
         return targets.compactMap { screen in
             guard let value = preset.onScreen(screen.id) else { return nil }
-            if reusingExisting, let group = groups.last(where:{$0.screenID == screen.id && $0.preset.id == value.id && $0.preset.root == value.root && $0.preset.emptyPanes == value.emptyPanes}) { return group }
-            return makeGroup(layout:value,desktop:screen)
+            let target = makeGroup(layout:value,desktop:screen)
+            if reusingExisting, let group = groups.last(where:{$0.screenID == screen.id && $0.preset.id == value.id && $0.preset.root == value.root && $0.preset.emptyPanes == value.emptyPanes && $0.gap == target.gap && $0.bounds == target.bounds}) { return group }
+            return target
         }
     }
     func destinations(for frame: CGRect) throws -> [WindowGroup] {
@@ -185,7 +187,8 @@ struct UndoEntry { var frames: [WindowMove]; var groups: [WindowGroup] }
     }
     func dropDestination(at point: CGPoint) -> WindowGroup? {
         guard let screen = Desktop.all.first(where:{$0.frame.contains(point)}), let value = layout.onScreen(screen.id) else { return nil }
-        return groups.last(where:{$0.screenID == screen.id && $0.preset.id == value.id && $0.preset.root == value.root && $0.preset.emptyPanes == value.emptyPanes}) ?? makeGroup(layout:value,desktop:screen)
+        let target = makeGroup(layout:value,desktop:screen)
+        return groups.last(where:{$0.screenID == screen.id && $0.preset.id == value.id && $0.preset.root == value.root && $0.preset.emptyPanes == value.emptyPanes && $0.gap == target.gap && $0.bounds == target.bounds}) ?? target
     }
     func group(containing window: LiveWindow) -> WindowGroup? { groups.first { $0.windows.contains(where: { $0.id == window.id }) } }
     func leafMinimums(_ group: WindowGroup) -> [String: CGSize] {

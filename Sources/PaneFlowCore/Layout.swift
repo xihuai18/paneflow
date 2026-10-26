@@ -120,23 +120,25 @@ public struct LayoutPreset: Codable, Identifiable, Equatable, Sendable {
     public var root: LayoutNode
     public var emptyPanes: Set<String>
     public var screens: [ScreenLayout]
+    public var capturedSpacing: Bool
     public var windowPanes: [String] { root.panes.filter { !emptyPanes.contains($0) } }
     public var windowCount: Int { screens.isEmpty ? windowPanes.count : screens.reduce(0) { $0 + $1.windowPanes.count } }
-    public init(id: String = UUID().uuidString, name: String, root: LayoutNode, emptyPanes: Set<String> = [], screens: [ScreenLayout] = []) {
-        self.id = id; self.name = name; self.root = root; self.emptyPanes = emptyPanes; self.screens = screens
+    public init(id: String = UUID().uuidString, name: String, root: LayoutNode, emptyPanes: Set<String> = [], screens: [ScreenLayout] = [], capturedSpacing: Bool = false) {
+        self.id = id; self.name = name; self.root = root; self.emptyPanes = emptyPanes; self.screens = screens; self.capturedSpacing = capturedSpacing
     }
     public func onScreen(_ id: String) -> LayoutPreset? {
         guard !screens.isEmpty else { return self }
         guard let screen = screens.first(where:{$0.id == id}) else { return nil }
-        return LayoutPreset(id:self.id,name:name,root:screen.root,emptyPanes:screen.emptyPanes)
+        return LayoutPreset(id:self.id,name:name,root:screen.root,emptyPanes:screen.emptyPanes,capturedSpacing:capturedSpacing)
     }
-    private enum CodingKeys: String, CodingKey { case id, name, root, emptyPanes, screens }
+    private enum CodingKeys: String, CodingKey { case id, name, root, emptyPanes, screens, capturedSpacing }
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy:CodingKeys.self)
         id = try values.decode(String.self,forKey:.id); name = try values.decode(String.self,forKey:.name)
         root = try values.decode(LayoutNode.self,forKey:.root)
         emptyPanes = try values.decodeIfPresent(Set<String>.self,forKey:.emptyPanes) ?? []
         screens = try values.decodeIfPresent([ScreenLayout].self,forKey:.screens) ?? []
+        capturedSpacing = try values.decodeIfPresent(Bool.self,forKey:.capturedSpacing) ?? false
         try validate()
     }
     public func validate() throws {
@@ -146,6 +148,68 @@ public struct LayoutPreset: Codable, Identifiable, Equatable, Sendable {
         for screen in screens { try screen.validate() }
     }
     public static func snappedPercent(_ value: Double) -> Double { value.rounded() }
+    public static func capturing(_ frames: [CGRect], in bounds: CGRect) throws -> LayoutPreset {
+        guard !frames.isEmpty else { throw LayoutCaptureError.empty }
+        guard frames.count <= 16, bounds.width > 0, bounds.height > 0 else { throw LayoutCaptureError.complex }
+        let tolerance: CGFloat = 2
+        let clipped = try frames.map { frame -> CGRect in
+            let value = frame.intersection(bounds)
+            guard !value.isNull, value.width > tolerance, value.height > tolerance,
+                  abs(value.minX-frame.minX) <= tolerance, abs(value.minY-frame.minY) <= tolerance,
+                  abs(value.maxX-frame.maxX) <= tolerance, abs(value.maxY-frame.maxY) <= tolerance else { throw LayoutCaptureError.outside }
+            return value
+        }
+        for i in clipped.indices {
+            for j in clipped.indices where j > i {
+                let overlap = clipped[i].intersection(clipped[j])
+                if overlap.width > tolerance && overlap.height > tolerance { throw LayoutCaptureError.overlap }
+            }
+        }
+        var emptyPanes = Set<String>()
+        func blank() -> LayoutNode { let id = UUID().uuidString; emptyPanes.insert(id); return .pane(id) }
+        func build(_ windows: [CGRect], in area: CGRect, depth: Int) throws -> LayoutNode {
+            guard depth <= 8 else { throw LayoutCaptureError.complex }
+            if windows.isEmpty { return blank() }
+            var cut: (SplitAxis,CGFloat)?
+            if windows.count == 1, let rect = windows.first {
+                if rect.minX-area.minX > tolerance { cut = (.horizontal,rect.minX) }
+                else if area.maxX-rect.maxX > tolerance { cut = (.horizontal,rect.maxX) }
+                else if rect.minY-area.minY > tolerance { cut = (.vertical,rect.minY) }
+                else if area.maxY-rect.maxY > tolerance { cut = (.vertical,rect.maxY) }
+                else { return .pane(UUID().uuidString) }
+            } else {
+                var best = Int.max
+                for axis in [SplitAxis.horizontal,.vertical] {
+                    let start = axis == .horizontal ? area.minX : area.minY
+                    let end = axis == .horizontal ? area.maxX : area.maxY
+                    let candidates = Set(windows.flatMap { axis == .horizontal ? [$0.minX,$0.maxX] : [$0.minY,$0.maxY] }).sorted()
+                    for value in candidates where value-start > tolerance && end-value > tolerance {
+                        let first = windows.filter { (axis == .horizontal ? $0.maxX : $0.maxY) <= value+tolerance }
+                        let second = windows.filter { (axis == .horizontal ? $0.minX : $0.minY) >= value-tolerance }
+                        let separatesEveryWindow = windows.allSatisfy { rect in
+                            ((axis == .horizontal ? rect.maxX : rect.maxY) <= value+tolerance) != ((axis == .horizontal ? rect.minX : rect.minY) >= value-tolerance)
+                        }
+                        if !first.isEmpty, !second.isEmpty, separatesEveryWindow, abs(first.count-second.count) < best {
+                            best = abs(first.count-second.count); cut = (axis,value)
+                        }
+                    }
+                }
+            }
+            guard let (axis,value) = cut else { throw LayoutCaptureError.complex }
+            let horizontal = axis == .horizontal
+            let firstArea = horizontal ? CGRect(x:area.minX,y:area.minY,width:value-area.minX,height:area.height) : CGRect(x:area.minX,y:area.minY,width:area.width,height:value-area.minY)
+            let secondArea = horizontal ? CGRect(x:value,y:area.minY,width:area.maxX-value,height:area.height) : CGRect(x:area.minX,y:value,width:area.width,height:area.maxY-value)
+            let first = windows.filter { (horizontal ? $0.maxX : $0.maxY) <= value+tolerance }.map{$0.intersection(firstArea)}
+            let second = windows.filter { (horizontal ? $0.minX : $0.minY) >= value-tolerance }.map{$0.intersection(secondArea)}
+            let ratio = horizontal ? firstArea.width/area.width : firstArea.height/area.height
+            return .split(id:UUID().uuidString,axis:axis,ratio:Double(ratio),first:try build(first,in:firstArea,depth:depth+1),second:try build(second,in:secondArea,depth:depth+1))
+        }
+        let root = try build(clipped,in:bounds,depth:0)
+        let result = LayoutPreset(name:"读取的布局",root:root,emptyPanes:emptyPanes,capturedSpacing:true)
+        do { try result.validate() } catch { throw LayoutCaptureError.complex }
+        guard result.windowCount == frames.count else { throw LayoutCaptureError.complex }
+        return result
+    }
     public static let builtins: [LayoutPreset] = [
         .init(id: "halves", name: "左右均分", root: .split(id: "main", axis: .horizontal, ratio: 0.5, first: .pane("a"), second: .pane("b"))),
         .init(id: "stack", name: "上下分屏", root: .split(id: "main", axis: .vertical, ratio: 0.5, first: .pane("a"), second: .pane("b"))),
@@ -217,6 +281,18 @@ public struct LayoutGeometry: Sendable {
 public enum LayoutError: Error, LocalizedError {
     case invalid, tooSmall
     public var errorDescription: String? { self == .invalid ? "布局数据无效。请选择或重新保存布局。" : "空间不足，无法满足这些窗口的最小尺寸。" }
+}
+
+public enum LayoutCaptureError: Error, LocalizedError {
+    case empty, outside, overlap, complex
+    public var errorDescription: String? {
+        switch self {
+        case .empty: return "请先勾选要参与布局的窗口。"
+        case .outside: return "有窗口跨越屏幕或超出可用区域，请移回屏幕内，或取消勾选。"
+        case .overlap: return "勾选的窗口互相重叠，请取消其中一个，或先排好窗口后刷新。"
+        case .complex: return "当前摆法无法完整转换为每屏最多 16 个横竖分区，请减少窗口或调整摆放。"
+        }
+    }
 }
 
 public enum DisplayGeometry {
