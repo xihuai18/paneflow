@@ -2,29 +2,29 @@ import AppKit
 
 /// A native material surface with one continuous outline, including its anchor pointer.
 final class PaletteChrome: NSView {
-    static let pointerHeight: CGFloat = 12
+    static let pointerHeight: CGFloat = 8
     let material = NSVisualEffectView()
     private let outline = CAShapeLayer()
     private let surfaceMask = CAShapeLayer()
     private let pointsUp: Bool
-    private let pointerX: CGFloat
+    private let pointerX: CGFloat?
 
-    init(content: NSView, pointsUp: Bool, pointerX: CGFloat) {
+    init(content: NSView, pointsUp: Bool, pointerX: CGFloat?) {
         self.pointsUp = pointsUp; self.pointerX = pointerX
         super.init(frame: .zero)
         wantsLayer = true
         material.material = .popover; material.blendingMode = .behindWindow; material.state = .active
         material.wantsLayer = true; material.layer?.mask = surfaceMask
         addSubview(material)
-        outline.fillColor = nil; outline.lineWidth = 1
+        outline.fillColor = nil; outline.lineWidth = 0.5
         layer?.addSublayer(outline)
         content.translatesAutoresizingMaskIntoConstraints = false
         material.addSubview(content)
         NSLayoutConstraint.activate([
             content.leadingAnchor.constraint(equalTo: material.leadingAnchor),
             content.trailingAnchor.constraint(equalTo: material.trailingAnchor),
-            content.topAnchor.constraint(equalTo: material.topAnchor, constant: pointsUp ? Self.pointerHeight : 0),
-            content.bottomAnchor.constraint(equalTo: material.bottomAnchor, constant: pointsUp ? 0 : -Self.pointerHeight)
+            content.topAnchor.constraint(equalTo: material.topAnchor, constant: pointerX != nil && pointsUp ? Self.pointerHeight : 0),
+            content.bottomAnchor.constraint(equalTo: material.bottomAnchor, constant: pointerX != nil && !pointsUp ? -Self.pointerHeight : 0)
         ])
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
@@ -44,8 +44,9 @@ final class PaletteChrome: NSView {
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsLayout = true }
 
     private func bubblePath(in rect: CGRect) -> CGPath {
+        guard let pointerX else { return CGPath(roundedRect:rect,cornerWidth:11,cornerHeight:11,transform:nil) }
         // Build the upper-pointer shape, then reflect it for a panel above its anchor.
-        let r: CGFloat = 13, h = Self.pointerHeight
+        let r: CGFloat = 11, h = Self.pointerHeight
         let left = rect.minX, right = rect.maxX, bottom = rect.minY, top = rect.maxY - h
         let x = min(right - r - 18, max(left + r + 18, pointerX))
         let p = CGMutablePath()
@@ -54,10 +55,10 @@ final class PaletteChrome: NSView {
         p.addQuadCurve(to:CGPoint(x:right,y:bottom+r),control:CGPoint(x:right,y:bottom))
         p.addLine(to:CGPoint(x:right,y:top-r))
         p.addQuadCurve(to:CGPoint(x:right-r,y:top),control:CGPoint(x:right,y:top))
-        p.addLine(to:CGPoint(x:x+17,y:top))
-        p.addCurve(to:CGPoint(x:x+5,y:top+9),control1:CGPoint(x:x+11,y:top),control2:CGPoint(x:x+9,y:top+5))
-        p.addQuadCurve(to:CGPoint(x:x-5,y:top+9),control:CGPoint(x:x,y:top+h+5))
-        p.addCurve(to:CGPoint(x:x-17,y:top),control1:CGPoint(x:x-9,y:top+5),control2:CGPoint(x:x-11,y:top))
+        p.addLine(to:CGPoint(x:x+12,y:top))
+        p.addCurve(to:CGPoint(x:x+3,y:top+6),control1:CGPoint(x:x+8,y:top),control2:CGPoint(x:x+6,y:top+3))
+        p.addQuadCurve(to:CGPoint(x:x-3,y:top+6),control:CGPoint(x:x,y:top+h+2))
+        p.addCurve(to:CGPoint(x:x-12,y:top),control1:CGPoint(x:x-6,y:top+3),control2:CGPoint(x:x-8,y:top))
         p.addLine(to:CGPoint(x:left+r,y:top))
         p.addQuadCurve(to:CGPoint(x:left,y:top-r),control:CGPoint(x:left,y:top))
         p.addLine(to:CGPoint(x:left,y:bottom+r))

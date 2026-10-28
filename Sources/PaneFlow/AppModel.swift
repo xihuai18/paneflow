@@ -58,7 +58,8 @@ struct UndoEntry { var frames: [WindowMove]; var groups: [WindowGroup] }
     @Published var windows: [LiveWindow] = []
     @Published var selectedIDs = Set<String>()
     @Published var groups: [WindowGroup] = []
-    @Published var notice = "按住 ⌥ 悬停绿按钮，或按 ⌃⌥ Space 选择布局。"
+    static let initialNotice = "按住 ⌥ 悬停绿按钮，或按 ⌃⌥ Space 选择布局。"
+    @Published var notice = AppModel.initialNotice
     @Published var busy = false
     @Published var paused = false
     @Published var trusted = WindowAccess.trusted

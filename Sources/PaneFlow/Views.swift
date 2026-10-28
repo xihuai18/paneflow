@@ -188,29 +188,30 @@ struct PaletteView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 0) {
-                HStack(spacing:8) {
-                    PaneFlowLogo(size:22)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("窗合 PaneFlow").font(.system(size:13,weight:.semibold))
-                        Text(target.label).font(.system(size:11)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle).help(target.label)
-                    }
+                HStack(spacing:7) {
+                    if let icon = NSRunningApplication(processIdentifier:target.app.pid)?.icon {
+                        Image(nsImage:icon).resizable().frame(width:14,height:14)
+                    } else { PaneFlowLogo(size:14) }
+                    Text(target.title.isEmpty ? target.app.name : target.title).font(.system(size:12,weight:.medium))
+                        .lineLimit(1).truncationMode(.middle).help(target.label)
                     Spacer(minLength:0)
-                }.padding(.horizontal,14).padding(.vertical,12).frame(maxWidth:.infinity,alignment:.leading).overlay(WindowDragArea())
+                }.padding(.leading,14).padding(.trailing,6).padding(.vertical,10).frame(maxWidth:.infinity,alignment:.leading).overlay(WindowDragArea())
                 Button(action: close) { Image(systemName: "xmark").font(.system(size:10,weight:.semibold)) }.buttonStyle(.plain).accessibilityLabel("关闭面板")
                     .foregroundStyle(.secondary).help("关闭面板（Esc），窗口联动会保留。")
-                    .frame(width:30,height:30).padding(.trailing,8)
+                    .frame(width:24,height:24).padding(.trailing,8)
             }
             Divider()
                 VStack(alignment: .leading, spacing: 8) {
                     if !model.trusted { PermissionStatus(model:model).font(.caption) }
-                    HStack {
+                    HStack(spacing:8) {
+                        Text("布局").font(.system(size:11)).foregroundStyle(.secondary)
                         Picker("布局", selection: $model.preferences.activeLayout) {
                             ForEach(model.layouts) { Text($0.name).tag($0.id) }
-                        }
-                        Button("管理…", action: edit)
+                        }.labelsHidden()
+                        Button("管理…", action: edit).buttonStyle(.borderless).foregroundStyle(.secondary)
                     }.controlSize(.small)
-                    Text("点击放置当前窗口；拖动窗口到分区可放置或交换。")
-                        .font(.system(size:11)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
+                    Text("拖入窗口放置，拖动分区交换")
+                        .font(.system(size:10)).foregroundStyle(.secondary)
                     layoutPreviews.disabled(model.busy || !model.trusted)
                     Divider()
                     HStack {
@@ -234,12 +235,12 @@ struct PaletteView: View {
                     Button("撤销", action: model.undo).disabled(model.busy || model.undoCount == 0)
                     Spacer()
                 }
-                Text("拖动列表或分区里的窗口放置、交换\n⌃⌥ Space 打开面板 · ⌥ 拖动真实窗口放置")
-                    .font(.system(size:11)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
                 Label(model.linkStatus,systemImage:"rectangle.split.2x1").font(.system(size:11)).help(model.linkHint)
-                Text(model.notice).font(.system(size:11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).lineLimit(2)
-                Text("拖放后保持打开 · 点击外部或按 Esc 关闭")
-                    .font(.system(size:10)).foregroundStyle(.tertiary)
+                if model.notice != AppModel.initialNotice {
+                    Text(model.notice).font(.system(size:11)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true).lineLimit(2)
+                }
+                Text("⌃⌥ Space 打开/收起 · Esc 关闭").font(.system(size:10)).foregroundStyle(.tertiary)
+                    .help("拖放后面板保持打开；点击外部或按 Esc 关闭。")
             }.padding(.horizontal,14).padding(.vertical,12).controlSize(.small)
         }.frame(minWidth: 320, idealWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
             .disabled(model.paused)

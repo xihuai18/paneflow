@@ -213,6 +213,8 @@ private struct HandlePreview: NSViewRepresentable {
                 let chrome = PaletteChrome(content:host,pointsUp:pointsUp,pointerX:44)
                 try await captureNative(chrome,size:NSSize(width:380,height:540),name:"bubble-\(dark ? "dark" : "light")-\(pointsUp ? "above" : "below")",dark:dark,directory:directory,results:&results)
             }
+            let keyboardHost = NSHostingView(rootView:PaletteView(model:model,target:sample,close:{},edit:{}).environment(\.colorScheme,dark ? .dark : .light))
+            try await captureNative(PaletteChrome(content:keyboardHost,pointsUp:true,pointerX:nil),size:NSSize(width:380,height:540),name:"bubble-keyboard-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
             let secondApp = WindowApp(pid:0,name:"示例编辑器",bundleID:"app.example.editor")
             let secondWindow = LiveWindow(id:"grouped-editor",element:AXUIElementCreateApplication(app.pid),app:secondApp,title:"布局笔记",frame:sample.frame)
             model.windows = [samples[0],secondWindow,samples[1],samples[2]]; model.selectedIDs = [samples[1].id]

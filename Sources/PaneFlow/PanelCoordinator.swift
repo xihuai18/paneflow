@@ -107,18 +107,18 @@ final class PalettePanel: NSPanel {
         }
         let view = PaletteView(model: model, target: target, close: dismiss, edit: { [weak self] in self?.showLayoutManager() })
         let available = screen.visible.insetBy(dx: 8, dy: 8)
-        // Keyboard invocation anchors to the target titlebar; hover uses the real green button.
-        let attachment = anchor ?? CGRect(x:target.frame.minX+40,y:target.frame.minY+8,width:14,height:14)
+        // Only a real green-button anchor gets a pointer; keyboard opening sits below the titlebar.
+        let attachment = anchor ?? CGRect(x:target.frame.minX+44,y:target.frame.minY+32,width:0,height:0)
         let height = min(CGFloat(540), available.height)
         let below = available.maxY - attachment.maxY
         let above = attachment.minY - available.minY
         let pointsUp = below >= height || below >= above
-        let initial = CGRect(x:attachment.midX-44,
-                             y:pointsUp ? attachment.maxY+3 : attachment.minY-height-3,
+        let initial = CGRect(x:anchor == nil ? target.frame.minX+12 : attachment.midX-32,
+                             y:pointsUp ? attachment.maxY+6 : attachment.minY-height-6,
                              width:min(CGFloat(380),available.width),height:height)
         let frame = DisplayGeometry.clampPanel(initial, to: available)
         let host = NSHostingView(rootView:view)
-        panel.contentView = PaletteChrome(content:host,pointsUp:pointsUp,pointerX:attachment.midX-frame.minX)
+        panel.contentView = PaletteChrome(content:host,pointsUp:pointsUp,pointerX:anchor == nil ? nil : attachment.midX-frame.minX)
         panel.setFrame(DisplayGeometry.flip(frame, primaryHeight: Double(NSScreen.screens.first?.frame.height ?? 0)), display: true)
         palette = panel; monitor(panel)
         let animate = !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
