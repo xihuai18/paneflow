@@ -269,17 +269,21 @@ struct PaletteView: View {
         }
     }
     private func windowRow(_ window: LiveWindow) -> some View {
-        Toggle(isOn:Binding(get:{model.selectedIDs.contains(window.id)},set:{ enabled in
+        let selection = Binding(get:{model.selectedIDs.contains(window.id)},set:{ enabled in
             if enabled {
                 if model.layout.windowCount == 1 { model.selectedIDs = [window.id] }
                 else if model.selectedIDs.count < model.layout.windowCount { model.selectedIDs.insert(window.id) }
             } else { model.selectedIDs.remove(window.id) }
-        })) {
-            Text(window.title.isEmpty ? "未命名窗口" : window.title).font(.system(size:12)).lineLimit(1).truncationMode(.middle)
-                .contentShape(Rectangle()).onDrag { WindowDragItem.provider(window.id) }
+        })
+        let title = window.title.isEmpty ? "未命名窗口" : window.title
+        return HStack(spacing:6) {
+            Toggle(title,isOn:selection).labelsHidden().toggleStyle(.checkbox)
+                .disabled(model.layout.windowCount > 1 && model.selectedIDs.count >= model.layout.windowCount && !model.selectedIDs.contains(window.id))
+            Text(title).font(.system(size:12)).lineLimit(1).truncationMode(.middle).frame(maxWidth:.infinity,alignment:.leading)
+                .contentShape(Rectangle()).onTapGesture { selection.wrappedValue.toggle() }
+                .onDrag { WindowDragItem.provider(window.id) }
                 .help("\(window.label)\n拖到上方分区放置或交换窗口。")
-        }.toggleStyle(.checkbox)
-            .disabled(model.layout.windowCount > 1 && model.selectedIDs.count >= model.layout.windowCount && !model.selectedIDs.contains(window.id))
+        }
     }
     @ViewBuilder private var layoutPreviews: some View {
         if let error = destinationError {

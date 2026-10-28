@@ -217,6 +217,8 @@ private struct HandlePreview: NSViewRepresentable {
             let secondWindow = LiveWindow(id:"grouped-editor",element:AXUIElementCreateApplication(app.pid),app:secondApp,title:"布局笔记",frame:sample.frame)
             model.windows = [samples[0],secondWindow,samples[1],samples[2]]; model.selectedIDs = [samples[1].id]
             try await capture(PaletteView(model:model,target:sample,close:{},edit:{}),size:NSSize(width:380,height:600),name:"palette-app-groups-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
+            model.selectedIDs = Set(samples.map(\.id))
+            try await capture(PaletteView(model:model,target:sample,close:{},edit:{}),size:NSSize(width:380,height:600),name:"palette-app-groups-full-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
             model.windows = samples; model.selectedIDs = Set(samples.map(\.id))
             model.linkStatus = "已显示 3 个分隔条"; model.linkHint = "拖动竖向分隔条调整左右，横向分隔条调整上下。"; model.visibleLinkCount = 3
             try await capture(PreferencesView(model:model,edit:{}),size:NSSize(width:540,height:680),name:"settings-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
