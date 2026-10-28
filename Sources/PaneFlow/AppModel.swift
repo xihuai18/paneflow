@@ -56,7 +56,7 @@ struct UndoEntry { var frames: [WindowMove]; var groups: [WindowGroup] }
 @MainActor final class AppModel: ObservableObject {
     @Published var preferences = Preferences() { didSet { if !storingPreferences { persist() } } }
     @Published var windows: [LiveWindow] = []
-    @Published var selectedIDs = Set<String>()
+    @Published var selectedIDs: [String] = []
     @Published var groups: [WindowGroup] = []
     static let initialNotice = "按住 ⌥ 悬停绿按钮，或按 ⌃⌥ Space 选择布局。"
     @Published var notice = AppModel.initialNotice
@@ -131,8 +131,7 @@ struct UndoEntry { var frames: [WindowMove]; var groups: [WindowGroup] }
         guard generation == scanGeneration, !busy else { return }
         windows = result
         if let focused, !windows.contains(where: { $0.id == focused.id }) { windows.insert(focused, at: 0) }
-        selectedIDs.formIntersection(Set(windows.map(\.id)))
-        if selectedIDs.isEmpty, let focused { selectedIDs.insert(focused.id) }
+        keepAvailableSelection()
         let live = Dictionary(windows.map { ($0.id,$0.frame) },uniquingKeysWith:{first,_ in first})
         for index in groups.indices {
             let geometry = try? groups[index].geometry()
@@ -210,7 +209,15 @@ struct UndoEntry { var frames: [WindowMove]; var groups: [WindowGroup] }
         }
         return result
     }
-    var selectedWindows: [LiveWindow] { windowGroups.flatMap(\.windows).filter { selectedIDs.contains($0.id) } }
+    var selectedWindows: [LiveWindow] { selectedIDs.compactMap { id in windows.first{$0.id == id} } }
+    func setWindowSelected(_ id: String, _ selected: Bool) {
+        if selected {
+            guard !selectedIDs.contains(id) else { return }
+            if layout.windowCount == 1 { selectedIDs = [id] }
+            else if selectedIDs.count < layout.windowCount { selectedIDs.append(id) }
+        } else { selectedIDs.removeAll{$0 == id} }
+    }
+    func keepAvailableSelection() { selectedIDs.removeAll { id in !windows.contains{$0.id == id} } }
     func arrangeSelected(completion: ((Bool) -> Void)? = nil) {
         let selected = selectedWindows
         guard !selected.isEmpty, selected.count <= layout.windowCount, let first = selected.first else {

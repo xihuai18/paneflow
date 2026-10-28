@@ -58,9 +58,16 @@ private struct HandlePreview: NSViewRepresentable {
         model.windows = [appA,appB,anotherA,unnamedA,unnamedB].enumerated().map { index,app in
             LiveWindow(id:"group-\(index)",element:AXUIElementCreateApplication(app.pid),app:app,title:"示例窗口 \(index)",frame:CGRect(x:0,y:0,width:600,height:400))
         }
-        model.selectedIDs = Set(model.windows.prefix(3).map(\.id))
-        try require(model.windowGroups.map(\.windows).map{ $0.map(\.id) } == [["group-0","group-2"],["group-1"],["group-3"],["group-4"]] && model.selectedWindows.map(\.id) == ["group-0","group-2","group-1"],
-                    "app hierarchy merges matching apps and arranges selected windows in visible group order",&results)
+        model.preferences.activeLayout = LayoutPreset.builtins[3].id
+        for id in ["group-1","group-2","group-0"] { model.setWindowSelected(id,true) }
+        try require(model.windowGroups.map(\.windows).map{ $0.map(\.id) } == [["group-0","group-2"],["group-1"],["group-3"],["group-4"]] && model.selectedWindows.map(\.id) == ["group-1","group-2","group-0"],
+                    "app hierarchy remains grouped while placement follows cross-app checkbox order",&results)
+        model.setWindowSelected("group-2",false); model.setWindowSelected("group-2",true)
+        model.setWindowSelected("group-2",true); model.setWindowSelected("group-3",true)
+        try require(model.selectedIDs == ["group-1","group-0","group-2"],"rechecking appends once and full selection preserves existing order",&results)
+        model.windows = Array(model.windows.filter{$0.id != "group-0"}.reversed()); model.keepAvailableSelection()
+        try require(model.selectedIDs == ["group-1","group-2"] && model.selectedWindows.map(\.id) == model.selectedIDs,
+                    "refresh reordering and closed windows preserve remaining checkbox order",&results)
         model.windows = []; model.selectedIDs = []
         let saved = LayoutPreset(id:"saved-layout",name:"阅读",root:LayoutPreset.builtins[3].root)
         try require(model.saveLayout(saved),"save initial custom layout",&results)
@@ -196,7 +203,7 @@ private struct HandlePreview: NSViewRepresentable {
         let samples = (1...3).map { index in LiveWindow(id:"interface-\(index)",element:AXUIElementCreateApplication(app.pid),app:app,title:"项目资料与工作窗口 \(index)",frame:CGRect(x:100,y:100,width:600,height:400)) }
         let sample = samples[0]
         model.preferences.activeLayout = LayoutPreset.builtins[3].id
-        model.windows = samples; model.selectedIDs = Set(samples.map(\.id)); model.trusted = true
+        model.windows = samples; model.selectedIDs = samples.map(\.id); model.trusted = true
         if let desktop = Desktop.all.first {
             var group = model.makeGroup(layout:model.layout,desktop:desktop)
             for (slot,window) in zip(group.preset.root.panes,samples) { group.members[slot] = window }
@@ -219,9 +226,11 @@ private struct HandlePreview: NSViewRepresentable {
             let secondWindow = LiveWindow(id:"grouped-editor",element:AXUIElementCreateApplication(app.pid),app:secondApp,title:"布局笔记",frame:sample.frame)
             model.windows = [samples[0],secondWindow,samples[1],samples[2]]; model.selectedIDs = [samples[1].id]
             try await capture(PaletteView(model:model,target:sample,close:{},edit:{}),size:NSSize(width:380,height:600),name:"palette-app-groups-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
-            model.selectedIDs = Set(samples.map(\.id))
+            model.selectedIDs = samples.map(\.id)
             try await capture(PaletteView(model:model,target:sample,close:{},edit:{}),size:NSSize(width:380,height:600),name:"palette-app-groups-full-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
-            model.windows = samples; model.selectedIDs = Set(samples.map(\.id))
+            model.selectedIDs = [samples[2].id,secondWindow.id,samples[0].id]
+            try await capture(PaletteView(model:model,target:sample,close:{},edit:{}),size:NSSize(width:380,height:600),name:"palette-selection-order-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
+            model.windows = samples; model.selectedIDs = samples.map(\.id)
             model.linkStatus = "已显示 3 个分隔条"; model.linkHint = "拖动竖向分隔条调整左右，横向分隔条调整上下。"; model.visibleLinkCount = 3
             try await capture(PreferencesView(model:model,edit:{}),size:NSSize(width:540,height:680),name:"settings-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
             model.trusted = false
@@ -260,7 +269,7 @@ private struct HandlePreview: NSViewRepresentable {
             }
             model.preferences.activeLayout = "centered-two-thirds"; model.selectedIDs = [sample.id]; model.linkStatus = "尚未建立联动布局"
             try await capture(PaletteView(model:model,target:sample,close:{},edit:{}),size:NSSize(width:380,height:540),name:"palette-blank-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
-            model.preferences.activeLayout = LayoutPreset.builtins[3].id; model.selectedIDs = Set(samples.map(\.id))
+            model.preferences.activeLayout = LayoutPreset.builtins[3].id; model.selectedIDs = samples.map(\.id)
             let handles = HStack(spacing:36) {
                 HandlePreview(axis:.horizontal).frame(width:18,height:64)
                 HandlePreview(axis:.vertical).frame(width:64,height:18)
@@ -356,7 +365,7 @@ private struct HandlePreview: NSViewRepresentable {
             for _ in 0..<200 { if !model.busy && model.undoCount == fullDepth { break }; try await Task.sleep(for:.milliseconds(100)) }
             let centerUndo = await model.access.read(windows)
             try require(windows.allSatisfy { w in fullLayoutFrames[w.id].flatMap { f in centerUndo[w.id].map{FrameSettler.matches($0,f)} } == true },"centered placement undo restores the full layout",&results)
-            _ = model.saveLayout(blankPair()); model.selectedIDs = Set(windows.prefix(2).map(\.id))
+            _ = model.saveLayout(blankPair()); model.selectedIDs = windows.prefix(2).map(\.id)
             model.arrangeSelected(); await Task.yield()
             for _ in 0..<200 { if !model.busy && model.undoCount>fullDepth { break }; try await Task.sleep(for:.milliseconds(100)) }
             guard let pairGroup = model.groups.first(where:{$0.preset.id == "blank-pair-fixture"}),
@@ -580,7 +589,7 @@ private struct HandlePreview: NSViewRepresentable {
         let before = await model.access.read(windows), previousGroups = model.groups, depth = model.undoCount
         let plan = LayoutPreset(id:"multi-native-fixture",name:"双屏练习",root:.pane("a"),screens:selected.map { ScreenLayout(id:$0.id,name:$0.name,root:.pane("a")) })
         guard model.saveLayout(plan) else { throw LayoutError.invalid }
-        model.selectedIDs = Set(windows.prefix(2).map(\.id))
+        model.selectedIDs = windows.prefix(2).map(\.id)
         let arranged: Bool = await withCheckedContinuation { continuation in model.arrangeSelected { continuation.resume(returning:$0) } }
         try require(arranged && model.undoCount == depth+1,"one transaction arranges selected windows across two actual displays",&results)
         let groups = model.groups.filter{$0.preset.id == plan.id}, actual = await model.access.read(windows)

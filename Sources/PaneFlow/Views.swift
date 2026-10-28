@@ -91,6 +91,7 @@ struct LayoutCanvas: View {
     var selected: String?
     var editing = false
     var selectedLine: String?
+    var numberOffset = 0
     var draggableWindows: [String:LiveWindow] = [:]
     var dropWindow: ((String,String) -> Void)? = nil
     var choose: (String) -> Void
@@ -117,7 +118,7 @@ struct LayoutCanvas: View {
     }
     @ViewBuilder private func pane(_ slot: String, index: Int, frame: CGRect) -> some View {
         let empty = emptyPanes.contains(slot)
-        let number = (root.panes.filter { !emptyPanes.contains($0) }.firstIndex(of:slot) ?? index)+1
+        let number = numberOffset+(root.panes.filter { !emptyPanes.contains($0) }.firstIndex(of:slot) ?? index)+1
         let label = empty ? "留白" : (names[slot] ?? "区域 \(number)")
         let action = editing ? "选择区域" : (empty ? "不放窗口" : "点击放置")
         let hint = editing ? "选择区域后添加横线、竖线或设为留白。" : (empty ? "留白区域不会放入窗口。" : (details[slot] ?? "点击放入当前窗口；已有窗口时交换位置。"))
@@ -220,7 +221,7 @@ struct PaletteView: View {
                         Text("\(model.selectedIDs.count)/\(model.layout.windowCount)").font(.caption).foregroundStyle(.secondary)
                         Button("刷新") { Task { await model.refresh(focused: target) } }.controlSize(.small)
                     }
-                    Text(model.layout.screens.isEmpty ? "最多勾选 \(model.layout.windowCount) 个窗口，留白区域会自动跳过。" : "按显示器顺序填入区域，最多 \(model.layout.windowCount) 个窗口。")
+                    Text("按勾选顺序排列，最多 \(model.layout.windowCount) 个窗口。")
                         .font(.system(size:11)).foregroundStyle(.secondary)
                     windowList
                 }.padding(.horizontal,14).padding(.vertical,12)
@@ -231,7 +232,7 @@ struct PaletteView: View {
                         model.arrangeSelected { success in if success { close() } }
                     }
                         .buttonStyle(.borderedProminent).disabled(model.busy || !model.trusted || model.selectedIDs.isEmpty || model.selectedIDs.count > model.layout.windowCount || destinationError != nil)
-                        .help("按列表顺序排列所选窗口，成功后自动收起面板。")
+                        .help("按勾选序号填入区域，成功后自动收起面板。")
                     Button("撤销", action: model.undo).disabled(model.busy || model.undoCount == 0)
                     Spacer()
                 }
@@ -270,12 +271,7 @@ struct PaletteView: View {
         }
     }
     private func windowRow(_ window: LiveWindow) -> some View {
-        let selection = Binding(get:{model.selectedIDs.contains(window.id)},set:{ enabled in
-            if enabled {
-                if model.layout.windowCount == 1 { model.selectedIDs = [window.id] }
-                else if model.selectedIDs.count < model.layout.windowCount { model.selectedIDs.insert(window.id) }
-            } else { model.selectedIDs.remove(window.id) }
-        })
+        let selection = Binding(get:{model.selectedIDs.contains(window.id)},set:{model.setWindowSelected(window.id,$0)})
         let title = window.title.isEmpty ? "未命名窗口" : window.title
         return HStack(spacing:6) {
             Toggle(title,isOn:selection).labelsHidden().toggleStyle(.checkbox)
@@ -284,6 +280,12 @@ struct PaletteView: View {
                 .contentShape(Rectangle()).onTapGesture { selection.wrappedValue.toggle() }
                 .onDrag { WindowDragItem.provider(window.id) }
                 .help("\(window.label)\n拖到上方分区放置或交换窗口。")
+            if let index = model.selectedIDs.firstIndex(of:window.id) {
+                Text("\(index+1)").font(.system(size:10,weight:.semibold)).monospacedDigit()
+                    .foregroundStyle(Color.accentColor).frame(minWidth:18,minHeight:18)
+                    .background(Color.accentColor.opacity(0.12),in:RoundedRectangle(cornerRadius:4))
+                    .accessibilityLabel("排列顺序 \(index+1)")
+            }
         }
     }
     @ViewBuilder private var layoutPreviews: some View {
@@ -294,10 +296,10 @@ struct PaletteView: View {
             else {
                 ScrollView(.horizontal) {
                     HStack(alignment:.top,spacing:12) {
-                        ForEach(groups,id:\.screenID) { group in
+                        ForEach(Array(groups.enumerated()),id:\.element.screenID) { index,group in
                             VStack(spacing:5) {
                                 Text(model.layout.screens.first{$0.id == group.screenID}?.name ?? "显示器").font(.caption).lineLimit(1)
-                                preview(group).aspectRatio(group.bounds.width/group.bounds.height,contentMode:.fit).frame(height:86)
+                                preview(group,numberOffset:groups.prefix(index).reduce(0){$0+$1.preset.windowPanes.count}).aspectRatio(group.bounds.width/group.bounds.height,contentMode:.fit).frame(height:86)
                             }.frame(width:groups.count == 1 ? 280 : 155)
                         }
                     }
@@ -305,14 +307,14 @@ struct PaletteView: View {
             }
         }
     }
-    private func preview(_ group: WindowGroup) -> some View {
+    private func preview(_ group: WindowGroup, numberOffset: Int = 0) -> some View {
         LayoutCanvas(root:group.preset.root,emptyPanes:group.preset.emptyPanes,names:group.members.mapValues{$0.app.name},details:group.members.mapValues{$0.title},
-                     draggableWindows:group.members,dropWindow:{ id,slot in
+                     numberOffset:numberOffset,draggableWindows:group.members,dropWindow:{ id,slot in
             model.dropWindow(id,slot:slot,screenID:group.screenID,fallback:target.frame)
         },choose:{ slot in model.place(target,slot:slot,in:group) { success in if success { close() } } })
     }
     private func limitSelection() {
-        if model.selectedIDs.count > model.layout.windowCount { model.selectedIDs = [target.id] }
+        if model.selectedIDs.count > model.layout.windowCount { model.selectedIDs = Array(model.selectedIDs.prefix(model.layout.windowCount)) }
     }
 }
 
