@@ -22,6 +22,11 @@ struct LiveWindow: Identifiable, @unchecked Sendable {
     var frame: CGRect
     var label: String { app.name + (title.isEmpty ? "" : " · " + title) }
 }
+struct WindowAppGroup: Identifiable {
+    let id: String
+    let app: WindowApp
+    var windows: [LiveWindow]
+}
 struct WindowMove: @unchecked Sendable { var window: LiveWindow; var frame: CGRect }
 typealias WindowSurface = (id: Int, pid: pid_t, frame: CGRect, layer: Int)
 struct AccessReport: @unchecked Sendable {

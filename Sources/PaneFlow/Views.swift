@@ -1,6 +1,51 @@
 import SwiftUI
 import PaneFlowCore
 
+enum WindowDragItem {
+    static let type = "app.paneflow.window-reference"
+    static func provider(_ id: String) -> NSItemProvider {
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier:type,visibility:.ownProcess) { completion in
+            completion(Data(id.utf8),nil); return nil
+        }
+        return provider
+    }
+    static func read(_ provider: NSItemProvider) async -> String? {
+        guard provider.hasItemConformingToTypeIdentifier(type) else { return nil }
+        return await withCheckedContinuation { continuation in
+            _ = provider.loadDataRepresentation(forTypeIdentifier:type) { data,_ in
+                continuation.resume(returning:data.flatMap { String(data:$0,encoding:.utf8) })
+            }
+        }
+    }
+}
+
+private struct WindowDropDelegate: DropDelegate {
+    @Binding var targeted: Bool
+    let accept: (String) -> Void
+    func validateDrop(info: DropInfo) -> Bool { info.hasItemsConforming(to:[WindowDragItem.type]) }
+    func dropEntered(info: DropInfo) { targeted = true }
+    func dropExited(info: DropInfo) { targeted = false }
+    func dropUpdated(info: DropInfo) -> DropProposal? { .init(operation:.move) }
+    func performDrop(info: DropInfo) -> Bool {
+        targeted = false
+        guard let provider = info.itemProviders(for:[WindowDragItem.type]).first else { return false }
+        Task { @MainActor in if let id = await WindowDragItem.read(provider) { accept(id) } }
+        return true
+    }
+}
+
+private struct WindowDropTarget: ViewModifier {
+    let accept: ((String) -> Void)?
+    @State private var targeted = false
+    @ViewBuilder func body(content: Content) -> some View {
+        if let accept {
+            content.overlay(RoundedRectangle(cornerRadius:7).strokeBorder(targeted ? Color.accentColor : .clear,lineWidth:2))
+                .onDrop(of:[WindowDragItem.type],delegate:WindowDropDelegate(targeted:$targeted,accept:accept))
+        } else { content }
+    }
+}
+
 private final class WindowDragView: NSView {
     override init(frame frameRect: NSRect) {
         super.init(frame:frameRect)
@@ -46,6 +91,8 @@ struct LayoutCanvas: View {
     var selected: String?
     var editing = false
     var selectedLine: String?
+    var draggableWindows: [String:LiveWindow] = [:]
+    var dropWindow: ((String,String) -> Void)? = nil
     var choose: (String) -> Void
     var moveLine: ((String, Double) -> Void)? = nil
     var selectLine: ((String) -> Void)? = nil
@@ -68,21 +115,28 @@ struct LayoutCanvas: View {
             }.coordinateSpace(name: "layout-editor")
         }
     }
-    private func pane(_ slot: String, index: Int, frame: CGRect) -> some View {
+    @ViewBuilder private func pane(_ slot: String, index: Int, frame: CGRect) -> some View {
         let empty = emptyPanes.contains(slot)
         let number = (root.panes.filter { !emptyPanes.contains($0) }.firstIndex(of:slot) ?? index)+1
         let label = empty ? "留白" : (names[slot] ?? "区域 \(number)")
         let action = editing ? "选择区域" : (empty ? "不放窗口" : "点击放置")
         let hint = editing ? "选择区域后添加横线、竖线或设为留白。" : (empty ? "留白区域不会放入窗口。" : (details[slot] ?? "点击放入当前窗口；已有窗口时交换位置。"))
-        return Button { choose(slot) } label: {
+        let button = Button { choose(slot) } label: {
             VStack(spacing:5) {
                 Text(label).font(.system(size:11,weight:.medium)).lineLimit(1)
                 if let detail = details[slot], !detail.isEmpty {
                     Text(detail).font(.system(size:10)).foregroundStyle(.secondary).lineLimit(1).truncationMode(.middle)
                 }
             }.frame(width:frame.width,height:frame.height).foregroundStyle(Color.primary)
-        }.buttonStyle(LayoutRegionStyle(selected:selected == slot,empty:empty)).position(x:frame.midX,y:frame.midY)
+        }.buttonStyle(LayoutRegionStyle(selected:selected == slot,empty:empty))
             .disabled(empty && !editing).help(hint).accessibilityLabel("\(label)，\(action)")
+            .modifier(WindowDropTarget(accept:editing || empty ? nil : dropWindow.map { drop in { id in drop(id,slot) } }))
+        if let window = draggableWindows[slot], !editing, !empty {
+            button.onDrag { WindowDragItem.provider(window.id) } preview: {
+                Label(window.title.isEmpty ? window.app.name : window.title,systemImage:"macwindow").padding(8)
+            }.help("拖到其他分区交换窗口；也可从下方列表拖入窗口。")
+                .position(x:frame.midX,y:frame.midY)
+        } else { button.position(x:frame.midX,y:frame.midY) }
     }
     private func divider(_ seam: LayoutSeam, bounds: CGRect, moveLine: @escaping (String,Double) -> Void) -> some View {
         let vertical = seam.axis == .horizontal
@@ -122,6 +176,7 @@ private struct LayoutRegionStyle: ButtonStyle {
 
 struct PaletteView: View {
     @ObservedObject var model: AppModel
+    @State private var collapsedApps = Set<String>()
     let target: LiveWindow
     let close: () -> Void
     let edit: () -> Void
@@ -154,7 +209,7 @@ struct PaletteView: View {
                         }
                         Button("管理…", action: edit)
                     }.controlSize(.small)
-                    Text("点击分区放置当前窗口，已有窗口时交换位置。")
+                    Text("点击放置当前窗口；拖动窗口到分区可放置或交换。")
                         .font(.system(size:11)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
                     layoutPreviews.disabled(model.busy || !model.trusted)
                     Divider()
@@ -166,20 +221,7 @@ struct PaletteView: View {
                     }
                     Text(model.layout.screens.isEmpty ? "最多勾选 \(model.layout.windowCount) 个窗口，留白区域会自动跳过。" : "按显示器顺序填入区域，最多 \(model.layout.windowCount) 个窗口。")
                         .font(.system(size:11)).foregroundStyle(.secondary)
-                    List {
-                        ForEach(model.windows) { window in
-                            Toggle(isOn: Binding(get: { model.selectedIDs.contains(window.id) }, set: { enabled in
-                                if enabled {
-                                    if model.layout.windowCount == 1 { model.selectedIDs = [window.id] }
-                                    else if model.selectedIDs.count < model.layout.windowCount { model.selectedIDs.insert(window.id) }
-                                } else { model.selectedIDs.remove(window.id) }
-                            })) {
-                                Text(window.label).font(.system(size: 12)).lineLimit(1).truncationMode(.middle).help(window.label)
-                            }.toggleStyle(.checkbox)
-                                .disabled(model.layout.windowCount > 1 && model.selectedIDs.count >= model.layout.windowCount && !model.selectedIDs.contains(window.id))
-                        }
-                        if model.windows.isEmpty { Text("没有找到可调整的窗口，请先打开一个普通窗口。").font(.caption).foregroundStyle(.secondary) }
-                    }.listStyle(.inset).scrollContentBackground(.hidden).frame(minHeight:100,maxHeight:.infinity)
+                    windowList
                 }.padding(.horizontal,14).padding(.vertical,12)
             Divider()
             VStack(alignment: .leading, spacing: 6) {
@@ -192,17 +234,52 @@ struct PaletteView: View {
                     Button("撤销", action: model.undo).disabled(model.busy || model.undoCount == 0)
                     Spacer()
                 }
-                Text("⌥ 拖动标题栏交换分区 · 拖动分隔条联动缩放")
+                Text("拖动列表或分区里的窗口放置、交换\n⌃⌥ Space 打开面板 · ⌥ 拖动真实窗口放置")
                     .font(.system(size:11)).foregroundStyle(.secondary).fixedSize(horizontal:false,vertical:true)
                 Label(model.linkStatus,systemImage:"rectangle.split.2x1").font(.system(size:11)).help(model.linkHint)
                 Text(model.notice).font(.system(size:11)).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true).lineLimit(2)
-                Text("完成后自动收起 · 点击外部或按 Esc 关闭")
+                Text("拖放后保持打开 · 点击外部或按 Esc 关闭")
                     .font(.system(size:10)).foregroundStyle(.tertiary)
             }.padding(.horizontal,14).padding(.vertical,12).controlSize(.small)
         }.frame(minWidth: 320, idealWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
             .disabled(model.paused)
             .onAppear(perform:limitSelection)
             .onChange(of:model.preferences.activeLayout) { _,_ in limitSelection() }
+    }
+    private var windowList: some View {
+        List {
+            ForEach(model.windowGroups) { group in appGroup(group) }
+            if model.windows.isEmpty { Text("没有找到可调整的窗口，请先打开一个普通窗口。").font(.caption).foregroundStyle(.secondary) }
+        }.listStyle(.inset).scrollContentBackground(.hidden).frame(minHeight:100,maxHeight:.infinity)
+    }
+    private func appGroup(_ group: WindowAppGroup) -> some View {
+        let selected = group.windows.filter { model.selectedIDs.contains($0.id) }.count
+        return DisclosureGroup(isExpanded:Binding(get:{!collapsedApps.contains(group.id)},set:{ expanded in
+            if expanded { collapsedApps.remove(group.id) } else { collapsedApps.insert(group.id) }
+        })) {
+            ForEach(group.windows) { window in windowRow(window) }
+        } label: {
+            HStack(spacing:6) {
+                if let icon = NSRunningApplication(processIdentifier:group.app.pid)?.icon { Image(nsImage:icon).resizable().frame(width:16,height:16) }
+                Text(group.app.name).font(.system(size:12,weight:.medium)).lineLimit(1)
+                Spacer(minLength:4)
+                Text(selected == 0 ? "\(group.windows.count) 个窗口" : "已选 \(selected)/\(group.windows.count)")
+                    .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            }
+        }
+    }
+    private func windowRow(_ window: LiveWindow) -> some View {
+        Toggle(isOn:Binding(get:{model.selectedIDs.contains(window.id)},set:{ enabled in
+            if enabled {
+                if model.layout.windowCount == 1 { model.selectedIDs = [window.id] }
+                else if model.selectedIDs.count < model.layout.windowCount { model.selectedIDs.insert(window.id) }
+            } else { model.selectedIDs.remove(window.id) }
+        })) {
+            Text(window.title.isEmpty ? "未命名窗口" : window.title).font(.system(size:12)).lineLimit(1).truncationMode(.middle)
+                .contentShape(Rectangle()).onDrag { WindowDragItem.provider(window.id) }
+                .help("\(window.label)\n拖到上方分区放置或交换窗口。")
+        }.toggleStyle(.checkbox)
+            .disabled(model.layout.windowCount > 1 && model.selectedIDs.count >= model.layout.windowCount && !model.selectedIDs.contains(window.id))
     }
     @ViewBuilder private var layoutPreviews: some View {
         if let error = destinationError {
@@ -224,9 +301,10 @@ struct PaletteView: View {
         }
     }
     private func preview(_ group: WindowGroup) -> some View {
-        LayoutCanvas(root:group.preset.root,emptyPanes:group.preset.emptyPanes,names:group.members.mapValues{$0.app.name},details:group.members.mapValues{$0.title}) { slot in
-            model.place(target,slot:slot,in:group) { success in if success { close() } }
-        }
+        LayoutCanvas(root:group.preset.root,emptyPanes:group.preset.emptyPanes,names:group.members.mapValues{$0.app.name},details:group.members.mapValues{$0.title},
+                     draggableWindows:group.members,dropWindow:{ id,slot in
+            model.dropWindow(id,slot:slot,screenID:group.screenID,fallback:target.frame)
+        },choose:{ slot in model.place(target,slot:slot,in:group) { success in if success { close() } } })
     }
     private func limitSelection() {
         if model.selectedIDs.count > model.layout.windowCount { model.selectedIDs = [target.id] }

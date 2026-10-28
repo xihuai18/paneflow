@@ -50,6 +50,18 @@ private struct HandlePreview: NSViewRepresentable {
         try FileManager.default.createDirectory(at:fixture,withIntermediateDirectories:true)
         let path = fixture.appendingPathComponent("preferences.json")
         let model = AppModel(storageURL:path)
+        let appA = WindowApp(pid:101,name:"示例浏览器",bundleID:"app.example.browser")
+        let appB = WindowApp(pid:102,name:"示例编辑器",bundleID:"app.example.editor")
+        let anotherA = WindowApp(pid:103,name:appA.name,bundleID:appA.bundleID)
+        let unnamedA = WindowApp(pid:104,name:"未标识应用",bundleID:"")
+        let unnamedB = WindowApp(pid:105,name:"未标识应用",bundleID:"")
+        model.windows = [appA,appB,anotherA,unnamedA,unnamedB].enumerated().map { index,app in
+            LiveWindow(id:"group-\(index)",element:AXUIElementCreateApplication(app.pid),app:app,title:"示例窗口 \(index)",frame:CGRect(x:0,y:0,width:600,height:400))
+        }
+        model.selectedIDs = Set(model.windows.prefix(3).map(\.id))
+        try require(model.windowGroups.map(\.windows).map{ $0.map(\.id) } == [["group-0","group-2"],["group-1"],["group-3"],["group-4"]] && model.selectedWindows.map(\.id) == ["group-0","group-2","group-1"],
+                    "app hierarchy merges matching apps and arranges selected windows in visible group order",&results)
+        model.windows = []; model.selectedIDs = []
         let saved = LayoutPreset(id:"saved-layout",name:"阅读",root:LayoutPreset.builtins[3].root)
         try require(model.saveLayout(saved),"save initial custom layout",&results)
         let state = LayoutManagerState(model:model)
@@ -177,6 +189,8 @@ private struct HandlePreview: NSViewRepresentable {
     }
     private static func interfaceChecks(delegate: AppDelegate, directory: URL, results: inout [[String:Any]]) async throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let reference = await WindowDragItem.read(WindowDragItem.provider("owned-window-reference"))
+        try require(reference == "owned-window-reference","native internal drag provider preserves the window reference",&results)
         let model = delegate.model
         let app = WindowApp(pid:ProcessInfo.processInfo.processIdentifier,name:"Microsoft Edge",bundleID:"app.paneflow.interface")
         let samples = (1...3).map { index in LiveWindow(id:"interface-\(index)",element:AXUIElementCreateApplication(app.pid),app:app,title:"项目资料与工作窗口 \(index)",frame:CGRect(x:100,y:100,width:600,height:400)) }
@@ -199,6 +213,11 @@ private struct HandlePreview: NSViewRepresentable {
                 let chrome = PaletteChrome(content:host,pointsUp:pointsUp,pointerX:44)
                 try await captureNative(chrome,size:NSSize(width:380,height:540),name:"bubble-\(dark ? "dark" : "light")-\(pointsUp ? "above" : "below")",dark:dark,directory:directory,results:&results)
             }
+            let secondApp = WindowApp(pid:0,name:"示例编辑器",bundleID:"app.example.editor")
+            let secondWindow = LiveWindow(id:"grouped-editor",element:AXUIElementCreateApplication(app.pid),app:secondApp,title:"布局笔记",frame:sample.frame)
+            model.windows = [samples[0],secondWindow,samples[1],samples[2]]; model.selectedIDs = [samples[1].id]
+            try await capture(PaletteView(model:model,target:sample,close:{},edit:{}),size:NSSize(width:380,height:600),name:"palette-app-groups-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
+            model.windows = samples; model.selectedIDs = Set(samples.map(\.id))
             model.linkStatus = "已显示 3 个分隔条"; model.linkHint = "拖动竖向分隔条调整左右，横向分隔条调整上下。"; model.visibleLinkCount = 3
             try await capture(PreferencesView(model:model,edit:{}),size:NSSize(width:540,height:680),name:"settings-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
             model.trusted = false
@@ -580,14 +599,22 @@ private struct HandlePreview: NSViewRepresentable {
             try require(model.dropDestination(at:CGPoint(x:excluded.visible.midX,y:excluded.visible.midY)) == nil,"unselected physical display cannot become an Option-drop target",&results)
         }
         guard let destination = groups.first(where:{$0.screenID == selected[1].id}) else { throw LayoutError.invalid }
-        let swapped: Bool = await withCheckedContinuation { continuation in model.place(windows[0],slot:"a",in:destination) { continuation.resume(returning:$0) } }
+        try require(!model.dropWindow("missing-reference",slot:"a",screenID:destination.screenID,fallback:windows[0].frame)
+                    && !model.dropWindow(windows[1].id,slot:"a",screenID:destination.screenID,fallback:windows[0].frame)
+                    && model.undoCount == depth+1,"palette drops reject missing windows and the same occupied slot without creating history",&results)
+        let swapped: Bool = await withCheckedContinuation { continuation in
+            model.dropWindow(windows[0].id,slot:"a",screenID:destination.screenID,fallback:windows[0].frame) { continuation.resume(returning:$0) }
+        }
         let swappedFrames = await model.access.read(windows)
         try require(swapped && swappedFrames[windows[0].id].flatMap { f in actual[windows[1].id].map{FrameSettler.matches(f,$0)} } == true
-                    && swappedFrames[windows[1].id].flatMap { f in actual[windows[0].id].map{FrameSettler.matches(f,$0)} } == true,"cross-screen slot exchange moves both windows to the correct monitors",&results)
+                    && swappedFrames[windows[1].id].flatMap { f in actual[windows[0].id].map{FrameSettler.matches(f,$0)} } == true,"palette drop exchanges both actual windows across monitors",&results)
         model.undo(); await Task.yield()
         for _ in 0..<200 { if !model.busy && model.undoCount == depth+1 { break }; try await Task.sleep(for:.milliseconds(100)) }
         let swapUndo = await model.access.read(windows)
-        try require(windows.prefix(2).allSatisfy { item in swapUndo[item.id].flatMap{f in actual[item.id].map{FrameSettler.matches(f,$0)}} == true },"cross-screen exchange undo restores both monitor positions",&results)
+        try require(windows.prefix(2).allSatisfy { item in
+            swapUndo[item.id].flatMap{f in actual[item.id].map{FrameSettler.matches(f,$0)}} == true
+                && model.windows.first{$0.id == item.id}.flatMap{w in swapUndo[item.id].map{FrameSettler.matches(w.frame,$0)}} == true
+        },"cross-screen exchange undo restores actual and palette window positions",&results)
         model.undo(); await Task.yield()
         for _ in 0..<200 { if !model.busy && model.undoCount == depth { break }; try await Task.sleep(for:.milliseconds(100)) }
         let arrangementUndo = await model.access.read(windows)

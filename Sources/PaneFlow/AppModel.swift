@@ -200,8 +200,18 @@ struct UndoEntry { var frames: [WindowMove]; var groups: [WindowGroup] }
             return copy.members.isEmpty ? nil : copy
         }
     }
+    var windowGroups: [WindowAppGroup] {
+        var result: [WindowAppGroup] = []
+        for window in windows {
+            let id = window.app.bundleID.isEmpty ? "pid-\(window.app.pid)" : window.app.bundleID
+            if let index = result.firstIndex(where:{$0.id == id}) { result[index].windows.append(window) }
+            else { result.append(.init(id:id,app:window.app,windows:[window])) }
+        }
+        return result
+    }
+    var selectedWindows: [LiveWindow] { windowGroups.flatMap(\.windows).filter { selectedIDs.contains($0.id) } }
     func arrangeSelected(completion: ((Bool) -> Void)? = nil) {
-        let selected = windows.filter { selectedIDs.contains($0.id) }
+        let selected = selectedWindows
         guard !selected.isEmpty, selected.count <= layout.windowCount, let first = selected.first else {
             notice = "请选择 1 到 \(layout.windowCount) 个窗口。"; completion?(false); return
         }
@@ -219,6 +229,19 @@ struct UndoEntry { var frames: [WindowMove]; var groups: [WindowGroup] }
             let message = targets.count > 1 ? "已在 \(targets.count) 块显示器排列窗口，可一次撤销。" : (selected.count > 1 ? "已排列窗口，留白区域保持空置。相邻窗口可联动调整。" : "窗口已放入指定区域。")
             Task { let success = await commit(moves,groups:next,success:message); completion?(success) }
         } catch { notice = error.localizedDescription; completion?(false) }
+    }
+    @discardableResult func dropWindow(_ id: String, slot: String, screenID: String, fallback: CGRect, completion: ((Bool) -> Void)? = nil) -> Bool {
+        guard !busy, !paused, trusted else { completion?(false); return false }
+        guard let window = windows.first(where:{$0.id == id}) ?? groups.flatMap(\.windows).first(where:{$0.id == id}) else {
+            notice = "窗口已关闭或不在列表中，请刷新后重试。"; completion?(false); return false
+        }
+        do {
+            guard let destination = try destinations(for:fallback).first(where:{$0.screenID == screenID}), destination.preset.windowPanes.contains(slot) else {
+                notice = "这个区域当前不可放置窗口。"; completion?(false); return false
+            }
+            guard destination.members[slot]?.id != id else { completion?(false); return false }
+            place(window,slot:slot,in:destination,completion:completion); return true
+        } catch { notice = error.localizedDescription; completion?(false); return false }
     }
     func place(_ window: LiveWindow, slot: String, in destination: WindowGroup, baseline: [WindowMove] = [], completion: ((Bool) -> Void)? = nil) {
         guard destination.preset.windowPanes.contains(slot) else { completion?(false); return }
@@ -275,7 +298,10 @@ struct UndoEntry { var frames: [WindowMove]; var groups: [WindowGroup] }
         Task {
             busy = true; scanGeneration += 1; onGroupsChanged?()
             let result = await access.apply(entry.frames)
-            if result.succeeded { history.removeLast(); groups = entry.groups; notice = result.warning ?? "已撤销上一次窗口操作。" }
+            if result.succeeded {
+                history.removeLast(); groups = entry.groups; notice = result.warning ?? "已撤销上一次窗口操作。"
+                for index in windows.indices { if let frame = result.actual[windows[index].id] { windows[index].frame = frame } }
+            }
             else { groups = without(result.rollbackFailed, from: groups); notice = result.message + (result.warning.map { " " + $0 } ?? "") }
             undoCount = history.count; busy = false; onGroupsChanged?()
         }
