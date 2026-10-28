@@ -175,6 +175,30 @@ private struct LayoutRegionStyle: ButtonStyle {
     }
 }
 
+struct NumberedWindowCheckbox: View {
+    @Binding var isOn: Bool
+    let number: Int?
+    let label: String
+    var body: some View {
+        Button { isOn.toggle() } label: {
+            RoundedRectangle(cornerRadius:4)
+                .fill(isOn ? Color.accentColor : Color(nsColor:.controlColor))
+                .overlay {
+                    if let number {
+                        Text("\(number)").font(.system(size:10,weight:.semibold)).monospacedDigit().foregroundStyle(.white)
+                            .lineLimit(1).minimumScaleFactor(0.7).padding(.horizontal,1)
+                    }
+                }
+                .overlay(RoundedRectangle(cornerRadius:4).strokeBorder(isOn ? Color.clear : Color(nsColor:.separatorColor),lineWidth:0.5))
+                .frame(width:16,height:16)
+        }.buttonStyle(.plain)
+            .accessibilityRepresentation {
+                Toggle(label,isOn:$isOn).toggleStyle(.checkbox)
+                    .accessibilityHint(number.map{"排列顺序 \($0)"} ?? "勾选以参与排列")
+            }
+    }
+}
+
 struct PaletteView: View {
     @ObservedObject var model: AppModel
     @State private var collapsedApps = Set<String>()
@@ -274,18 +298,12 @@ struct PaletteView: View {
         let selection = Binding(get:{model.selectedIDs.contains(window.id)},set:{model.setWindowSelected(window.id,$0)})
         let title = window.title.isEmpty ? "未命名窗口" : window.title
         return HStack(spacing:6) {
-            Toggle(title,isOn:selection).labelsHidden().toggleStyle(.checkbox)
+            NumberedWindowCheckbox(isOn:selection,number:model.selectedIDs.firstIndex(of:window.id).map{$0+1},label:title)
                 .disabled(model.layout.windowCount > 1 && model.selectedIDs.count >= model.layout.windowCount && !model.selectedIDs.contains(window.id))
             Text(title).font(.system(size:12)).lineLimit(1).truncationMode(.middle).frame(maxWidth:.infinity,alignment:.leading)
                 .contentShape(Rectangle()).onTapGesture { selection.wrappedValue.toggle() }
                 .onDrag { WindowDragItem.provider(window.id) }
                 .help("\(window.label)\n拖到上方分区放置或交换窗口。")
-            if let index = model.selectedIDs.firstIndex(of:window.id) {
-                Text("\(index+1)").font(.system(size:10,weight:.semibold)).monospacedDigit()
-                    .foregroundStyle(Color.accentColor).frame(minWidth:18,minHeight:18)
-                    .background(Color.accentColor.opacity(0.12),in:RoundedRectangle(cornerRadius:4))
-                    .accessibilityLabel("排列顺序 \(index+1)")
-            }
         }
     }
     @ViewBuilder private var layoutPreviews: some View {

@@ -210,6 +210,11 @@ private struct HandlePreview: NSViewRepresentable {
             model.groups = [group]
         }
         for dark in [false,true] {
+            let numberedControls = HStack(spacing:12) {
+                ForEach(1...3,id:\.self) { number in NumberedWindowCheckbox(isOn:.constant(true),number:number,label:"示例窗口 \(number)") }
+                NumberedWindowCheckbox(isOn:.constant(false),number:nil,label:"未选窗口")
+            }.padding(10).frame(maxWidth:.infinity,maxHeight:.infinity)
+            try await capture(numberedControls,size:NSSize(width:140,height:40),name:"selection-controls-\(dark ? "dark" : "light")",dark:dark,directory:directory,results:&results)
             model.linkStatus = "尚未建立联动布局"; model.linkHint = "在布局面板勾选多个窗口，点击“排列并联动”。"; model.visibleLinkCount = 0
             for width in [320.0,360.0] {
                 let view = PaletteView(model:model,target:sample,close:{},edit:{})
